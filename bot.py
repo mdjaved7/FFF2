@@ -1581,7 +1581,8 @@ async def add_clone_command(c: Client, m: Message):
     if m.from_user.id != config.OWNER_ID: return
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        await m.reply("Usage: `/add_clone <BOT_TOKEN>`")
+        # यहाँ पर < > की जगह [ ] कर दिया गया है ताकि टेलीग्राम क्रैश न हो
+        await m.reply("Usage: `/add_clone [BOT_TOKEN]`")
         return
     result = await clone_mgr.create_clone(parts[1].strip())
     if result:
@@ -1602,6 +1603,7 @@ async def backup_command(c: Client, m: Message):
         await pm.edit_text(f"✅ Backup complete! {len(files)} files.")
     except Exception as e:
         await pm.edit_text(f"❌ Backup failed: {e}")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 15. MAIN ENTRY POINT
