@@ -251,7 +251,8 @@ class Database:
         return cls._instance
 
     async def connect(self) -> AsyncIOMotorDatabase:
-        if self._db: return self._db
+        # यहाँ क्रैश को रोकने के लिए 'is not None' जोड़ा गया है
+        if self._db is not None: return self._db 
         for attempt in range(1, 6):
             try:
                 log.info(f"MongoDB connect attempt {attempt}/5...")
