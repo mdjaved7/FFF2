@@ -1455,27 +1455,24 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
         return
 
     # Restart
-if data == "a_restart":
-    await msg.edit_text("🔄 **Restart all bots?**", reply_markup=kb.confirm("restart_all"))
-    return
-
 if data == "conf_restart_all":
     await msg.edit_text("🔄 Restarting...")
+
     await clone_mgr.shutdown_all()
     await asyncio.sleep(2)
 
     main_client = await clone_mgr.init_main()
     clone_mgr._register_handlers(main_client, "main")
     await main_client.start()
+
     await clone_mgr.load_all_clones()
 
     _start_time = time.time()
 
-    await msg.edit_text("✅ **All bots restarted!**", reply_markup=kb.back())
-    return
-
-if data == "cancel_restart_all":
-    await show_admin_dash(c, msg, True)
+    await msg.edit_text(
+        "✅ **All bots restarted!**",
+        reply_markup=kb.back()
+    )
     return
 
     # Backup
