@@ -1535,25 +1535,32 @@ if data == "cancel_restart_all":
     await show_admin_dash(c, msg, True)
     return
 
-    # Backup
-    if data == "a_backup":
-        await msg.edit_text(
-            "💾 **Backup**\n\n"
-            "`/backup` to export file records to JSON.\n"
-            "Sent to log channel if configured.\n\n"
-            "GDrive: " + ("✅ configured" if config.GDRIVE_FOLDER_ID else "❌ not set"),
-            reply_markup=kb.back()
-        )
-        return
-    # Cancel delivery
-    if data.startswith("cancel_dl:"):
-        parts = data.split(":")
-        bid, cl = parts[1], parts[2] if len(parts) > 2 else clone_id
-        delivery_engine.cancel(cl, uid, bid)
-        await q.answer("⏹ Delivery cancelled", show_alert=True); return
 
-    await q.answer("Unknown action")
+# Backup
+if data == "a_backup":
+    await msg.edit_text(
+        "💾 **Backup**\n\n"
+        "`/backup` to export file records to JSON.\n"
+        "Sent to log channel if configured.\n\n"
+        "GDrive: " + ("✅ configured" if config.GDRIVE_FOLDER_ID else "❌ not set"),
+        reply_markup=kb.back()
+    )
+    return
 
+
+# Cancel delivery
+if data.startswith("cancel_dl:"):
+    parts = data.split(":")
+    bid = parts[1]
+    cl = parts[2] if len(parts) > 2 else clone_id
+
+    delivery_engine.cancel(cl, uid, bid)
+
+    await q.answer("⏹ Delivery cancelled", show_alert=True)
+    return
+
+
+await q.answer("Unknown action")
 
 async def show_admin_dash(c: Client, msg: Message, edit: bool = False):
     global _start_time
