@@ -1518,8 +1518,7 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
         return
 
     if data == "conf_restart_all":
-        await msg.edit_text("🔄 Restarting...")
-
+        InlineKeyboardButton("🔄 Restart", callback_data="a_restart")
         try:
             await clone_mgr.shutdown_all()
             await database.close()
