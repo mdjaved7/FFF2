@@ -426,7 +426,7 @@ db = Database()
 # 5. DATABASE ENGINE (CONTINUATION: ADVANCED MODULES & SETTINGS)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-    # --- CUSTOM THUMBNAIL MANAGERS ---
+# --- CUSTOM THUMBNAIL MANAGERS ---
     async def set_thumbnail(self, user_id: int, file_id: str):
         await self.thumbnails.update_one(
             {"user_id": user_id},
