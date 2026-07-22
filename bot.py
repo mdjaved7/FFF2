@@ -315,7 +315,7 @@ class Repo:
 repo = Repo()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6. GLOBAL STATE & DELIVERY ENGINE
+# 6. GLOBAL STATE & DELIVERY ENGINE WITH 8-HOUR AUTO-DELETE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _start_time = time.time()
@@ -323,6 +323,7 @@ main_client: Optional[Client] = None
 _clients: Dict[str, Client] = {}
 _upload_buffers: Dict[str, Dict[str, Tuple[List[dict], float]]] = defaultdict(lambda: defaultdict(lambda: ([], 0.0)))
 _delivery_queue: asyncio.Queue = asyncio.Queue()
+_active_cancel_tokens: Dict[str, bool] = {}  # User-wise cancellation flag
 
 class DeliveryEngine:
     def __init__(self): 
@@ -356,7 +357,6 @@ class DeliveryEngine:
         db_name = await repo.get_db_name_for_clone(clone)
         batch = await repo.get_batch_by_id(batch_id, clone, db_name)
         if not batch:
-            # Fallback to main DB
             batch = await repo.get_batch_by_id(batch_id, "main", "main")
         if not batch: return
 
@@ -364,21 +364,60 @@ class DeliveryEngine:
         client = _clients.get(clone) or main_client
         if not client: return
 
+        # Cancel flag setup
+        cancel_key = f"{uid}_{batch_id}"
+        _active_cancel_tokens[cancel_key] = False
+
+        sent_msg_ids = []
+        delete_time = datetime.now(timezone.utc) + timedelta(hours=8)
+
+        # Send Header Banner First
+        banner_text = (
+            "𝙷𝙸𝙽𝙳𝙸 𝚂𝚃𝙾𝚁𝚈\n"
+            "❤️ 𝙷𝙴𝚈 𝙱𝚁𝙾 🇮🇳\n\n"
+            "📂 𝙵𝙸𝙻𝙴𝚂 𝚆𝙸𝙻𝙻 𝙱𝙴 𝙳𝙴𝙻𝙴𝚃𝙴𝙳\n"
+            "𝙰𝙵𝚃𝙴𝚁 𝟾 𝙷𝙾𝚄𝚁𝚂 𝙿𝙻𝙴𝙰𝚂𝙴\n"
+            "𝚂𝙰𝚅𝙴 𝚃𝙷𝙴𝙼 𝚂𝙾𝙼𝙴𝚆𝙷𝙴𝚁𝙴 𝚂𝙰𝙵𝙴."
+        )
+        try:
+            head_msg = await client.send_message(chat_id, banner_text)
+            sent_msg_ids.append(head_msg.id)
+        except: pass
+
         for idx, fm in enumerate(files):
+            # Check if user pressed cancel button
+            if _active_cancel_tokens.get(cancel_key, False):
+                await client.send_message(chat_id, "🛑 **Sending Cancelled by User!**")
+                break
+
             try:
-                await client.copy_message(chat_id, config.DB_CHANNEL_ID, fm["db_msg_id"], caption=fm.get("caption", ""), protect_content=protect)
+                msg = await client.copy_message(chat_id, config.DB_CHANNEL_ID, fm["db_msg_id"], caption=fm.get("caption", ""), protect_content=protect)
                 sent += 1
+                sent_msg_ids.append(msg.id)
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
-                await client.copy_message(chat_id, config.DB_CHANNEL_ID, fm["db_msg_id"], caption=fm.get("caption", ""), protect_content=protect)
+                msg = await client.copy_message(chat_id, config.DB_CHANNEL_ID, fm["db_msg_id"], caption=fm.get("caption", ""), protect_content=protect)
                 sent += 1
+                sent_msg_ids.append(msg.id)
             except Exception as e:
                 log.error(f"Error copying message: {e}")
                 failed += 1
             await asyncio.sleep(config.BATCH_SEND_DELAY)
 
+        # Schedule 8-Hour Auto Delete for sent messages
+        if sent_msg_ids:
+            col = await database.col("auto_delete", db_name)
+            await col.insert_one({
+                "chat_id": chat_id,
+                "msg_ids": sent_msg_ids,
+                "delete_at": delete_time.isoformat(),
+                "clone_id": clone
+            })
+
+        _active_cancel_tokens.pop(cancel_key, None)
+
         try:
-            await client.edit_message_text(chat_id, progress_msg_id, f"✅ **Delivery Complete!**\n\nSent: {sent}/{total}\nFailed: {failed}\n💾 Status: Permanent Storage")
+            await client.edit_message_text(chat_id, progress_msg_id, f"✅ **Delivery Complete!**\n\nSent: {sent}/{total}\nFailed: {failed}\n⏳ **Status:** Auto-delete set after 8 hours!")
         except: pass
 
 delivery_engine = DeliveryEngine()
@@ -413,6 +452,13 @@ class KB:
             [InlineKeyboardButton("🔄 Verify Membership", callback_data="check_sub")],
         ])
 
+    @staticmethod
+    def cancel_batch(cancel_key: str, channel_link: Optional[str] = None):
+        buttons = [[InlineKeyboardButton("🛑 Cancel Uploading", callback_data=f"stop_dl_{cancel_key}")]]
+        if channel_link:
+            buttons.append([InlineKeyboardButton("📢 Join Updates Channel", url=channel_link)])
+        return InlineKeyboardMarkup(buttons)
+
 kb = KB()
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -428,7 +474,7 @@ class CloneManager:
     def _register_handlers(self, client: Client, clone_id: str):
         async def _db(): return await repo.get_db_name_for_clone(clone_id)
 
-        # /start command (FIXED)
+        # /start command
         async def start_c(c: Client, m: Message):
             db_name = await _db(); user = m.from_user
             if not user: return
@@ -437,12 +483,16 @@ class CloneManager:
             if await repo.is_banned(user.id, clone_id, db_name):
                 await m.reply("❌ आप इस Bot पर बैन हैं।"); return
 
+            # FORCE SUB CHECK - STRICT MANDATORY REQUIREMENT
             settings = await repo.get_settings(clone_id, db_name)
             fsubs = settings.get("force_subs", []) or config.FORCE_SUB_CHANNELS
+            fsub_link = None
+            
             if fsubs:
                 all_ok, _, link = await check_all_subs(c, user.id, fsubs)
+                fsub_link = link
                 if not all_ok:
-                    msg = settings.get("force_sub_msg", "⚠️ कृपया Channel Join करें!")
+                    msg = settings.get("force_sub_msg", "⚠️ **पहले Channel Join करें tabhi Files milengi!**")
                     await m.reply(msg, reply_markup=kb.sub_link(link)); return
 
             args = m.text.split(maxsplit=1)
@@ -452,24 +502,34 @@ class CloneManager:
             if param.startswith("f_"):
                 fid = param
                 fd = await repo.get_file_by_id(fid, clone_id, db_name)
-                if not fd:
-                    fd = await repo.get_file_by_id(fid, "main", "main")
-                if not fd: 
-                    await m.reply("❌ File नहीं मिली।"); return
-                await c.copy_message(m.chat.id, config.DB_CHANNEL_ID, fd["db_msg_id"], caption=fd.get("caption",""), protect_content=settings.get("protect", True))
+                if not fd: fd = await repo.get_file_by_id(fid, "main", "main")
+                if not fd: await m.reply("❌ File नहीं मिली।"); return
+                
+                banner_text = "𝙷𝙸𝙽𝙳𝙸 𝚂𝚃𝙾𝚁𝚈\n❤️ 𝙷𝙴𝚈 𝙱𝚁𝙾 🇮🇳\n\n📂 𝙵𝙸𝙻𝙴𝚂 𝚆𝙸𝙻𝙻 𝙱𝙴 𝙳𝙴𝙻𝙴𝚃𝙴𝙳\n𝙰𝙵𝚃𝙴𝚁 𝟾 𝙷𝙾𝚄𝚁𝚂 𝙿𝙻𝙴𝙰𝚂𝙴\n𝚂𝙰𝚅𝙴 𝚃𝙷𝙴𝙼 𝚂𝙾𝙼𝙴𝚆𝙷𝙴𝚁𝙴 𝚂𝙰𝙵𝙴."
+                h_msg = await c.send_message(m.chat.id, banner_text)
+                f_msg = await c.copy_message(m.chat.id, config.DB_CHANNEL_ID, fd["db_msg_id"], caption=fd.get("caption",""), protect_content=settings.get("protect", True))
+                
+                # Auto delete single file
+                delete_time = datetime.now(timezone.utc) + timedelta(hours=8)
+                col = await database.col("auto_delete", db_name)
+                await col.insert_one({"chat_id": m.chat.id, "msg_ids": [h_msg.id, f_msg.id], "delete_at": delete_time.isoformat(), "clone_id": clone_id})
                 return
 
-            # Batch Collection Fetch (FIXED Prefix Issue)
+            # Batch Collection Fetch
             if param.startswith("b_"):
                 bid = param
                 batch = await repo.get_batch_by_id(bid, clone_id, db_name)
-                if not batch:
-                    # Search in main DB fallback
-                    batch = await repo.get_batch_by_id(bid, "main", "main")
-                if not batch: 
-                    await m.reply("❌ Batch नहीं मिला।"); return
+                if not batch: batch = await repo.get_batch_by_id(bid, "main", "main")
+                if not batch: await m.reply("❌ Batch नहीं मिला।"); return
                 
-                info = await m.reply(f"📦 **Batch Delivery Started!**\nFiles: {batch['total_files']} | Size: {fmt_size(batch['total_size'])}")
+                cancel_key = f"{user.id}_{bid}"
+                main_ch_link = fsub_link or (fsubs[0] if fsubs else None)
+                
+                info = await m.reply(
+                    f"📦 **Batch Delivery Started!**\nFiles: {batch['total_files']} | Size: {fmt_size(batch['total_size'])}\n\n"
+                    "⏳ *All sent files will automatically delete in 8 hours.*",
+                    reply_markup=kb.cancel_batch(cancel_key, main_ch_link)
+                )
                 delivery_engine.enqueue(clone_id, user.id, m.chat.id, bid, info.id, settings.get("protect", True))
                 return
 
@@ -497,7 +557,7 @@ class CloneManager:
                 "access_token": token, "files": files,
                 "total_files": len(files), "total_size": total_size,
                 "created_at": datetime.now(timezone.utc).isoformat(),
-                "auto_delete_at": None,  # PERMANENT STORAGE
+                "auto_delete_at": None,
                 "deleted": False,
             }
 
@@ -515,8 +575,7 @@ class CloneManager:
             await m.reply(
                 f"✅ **Batch Upload Complete!**\n\n"
                 f"📄 **कुल Files:** {len(files)}\n"
-                f"📏 **कुल Size:** {fmt_size(total_size)}\n"
-                f"💾 **Storage:** Permanent (Safe Forever)\n\n"
+                f"📏 **कुल Size:** {fmt_size(total_size)}\n\n"
                 f"🔗 **Single Collection Link:**\n`{link}`",
                 disable_web_page_preview=True
             )
@@ -575,21 +634,27 @@ class CloneManager:
             data = q.data; uid = q.from_user.id; db_name = await _db()
             await q.answer()
 
-            if data == "close": await q.message.delete()
+            if data == "close": 
+                await q.message.delete()
+            elif data.startswith("stop_dl_"):
+                cancel_key = data.replace("stop_dl_", "")
+                _active_cancel_tokens[cancel_key] = True
+                await q.answer("🛑 Upload Cancelled!", show_alert=True)
+                await q.message.edit_text("🛑 **Delivery Cancelled by User.**\n\n*Already sent files will still delete after 8 hours.*")
             elif data == "help":
                 await q.message.edit_text(
                     "📚 **Help & Guide**\n\n"
                     "• **Files Bhejin:** Directly files chat me bhejte rahein\n"
                     "• **/done:** Upload khatam hone par Single Link paane ke liye bhejie\n"
                     "• **/cancel:** Pending upload list ko khali karne ke liye\n\n"
-                    "Note: Sabhi files **Permanently Safe** rahengi.",
+                    "Note: Sabhi files **8 Hours me chat se auto delete** hongi.",
                     reply_markup=kb.back("main_dash")
                 )
             elif data == "check_sub":
                 settings = await repo.get_settings(clone_id, db_name)
                 fsubs = settings.get("force_subs", []) or config.FORCE_SUB_CHANNELS
                 all_ok, _, _ = await check_all_subs(c, uid, fsubs)
-                if all_ok: await q.message.edit_text("✅ Verification Successful! Now use /start.")
+                if all_ok: await q.message.edit_text("✅ Verification Successful! Now click the link again.")
                 else: await q.answer("❌ Abhi bhi channels join nahi hain!", show_alert=True)
             elif data.startswith("a_") or data == "admin_dashboard":
                 await admin_callback_handler(c, q, clone_id)
@@ -636,7 +701,39 @@ class CloneManager:
 clone_mgr = CloneManager()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 9. ADMIN ACTIONS & COMMANDS
+# 9. AUTO DELETE BACKGROUND WORKER (8 HOURS EXPIRED MESSAGE DELETER)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def auto_delete_messages_worker():
+    while True:
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            col = await database.col("auto_delete", "main")
+            
+            # Fetch pending deletions
+            pending = await col.find({"delete_at": {"$lte": now}}).to_list(length=100)
+
+            for item in pending:
+                cid = item["chat_id"]
+                mids = item["msg_ids"]
+                clone_id = item.get("clone_id", "main")
+                client = _clients.get(clone_id) or main_client
+
+                if client:
+                    try:
+                        await client.delete_messages(chat_id=cid, message_ids=mids)
+                    except Exception as err:
+                        log.error(f"Delete msg error in {cid}: {err}")
+                
+                await col.delete_one({"_id": item["_id"]})
+
+        except Exception as e:
+            log.error(f"Auto delete worker error: {e}")
+
+        await asyncio.sleep(60) # Runs every 1 minute
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 10. ADMIN ACTIONS & ENGINE BOOTSTRAPPER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
@@ -650,7 +747,7 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
     if data == "a_stats":
         clones = await repo.get_all_clones()
         up = fmt_time(int(time.time() - _start_time))
-        await msg.edit_text(f"<b>📊 Statistics</b>\n\nClones Active: <code>{len(clones)}</code>\nEngine Uptime: <code>{up}</code>\nStorage: Permanent Enabled", reply_markup=kb.back())
+        await msg.edit_text(f"<b>📊 Statistics</b>\n\nClones Active: <code>{len(clones)}</code>\nEngine Uptime: <code>{up}</code>\nStorage: Auto-Delete (8 Hours)", reply_markup=kb.back())
 
     elif data == "a_clones":
         clones = await repo.get_all_clones()
@@ -684,45 +781,6 @@ async def broadcast_cmd(c: Client, m: Message):
 
     await pm.edit_text(f"✅ **Broadcast Done!**\nSuccess: {succ} | Failed: {fail}")
 
-async def add_clone_cmd(c: Client, m: Message):
-    if m.from_user.id != config.OWNER_ID: return
-    parts = m.text.split(maxsplit=2)
-    if len(parts) < 2:
-        await m.reply("Usage: `/add_clone <BOT_TOKEN> [CUSTOM_MONGO_URI]`")
-        return
-    token = parts[1].strip()
-    m_uri = parts[2].strip() if len(parts) > 2 else None
-
-    res = await clone_mgr.create_clone(token, m_uri)
-    if res: await m.reply(f"✅ Clone Active: @{res['bot_username']} (ID: `{res['clone_id']}`)")
-    else: await m.reply("❌ Clone Setup Failed.")
-
-async def delete_clone_cmd(c: Client, m: Message):
-    if m.from_user.id != config.OWNER_ID: return
-    parts = m.text.split()
-    if len(parts) < 2: await m.reply("Usage: `/delete_clone <CLONE_ID>`"); return
-    cid = parts[1].strip()
-    await repo.delete_clone(cid)
-    await m.reply(f"🗑 Clone `{cid}` removed.")
-
-async def ban_cmd(c: Client, m: Message):
-    if not await repo.is_mod(m.from_user.id): return
-    if not m.reply_to_message and len(m.text.split()) < 2: return
-    uid = m.reply_to_message.from_user.id if m.reply_to_message else int(m.text.split()[1])
-    await repo.ban_user(uid)
-    await m.reply(f"🚫 User `{uid}` banned.")
-
-async def unban_cmd(c: Client, m: Message):
-    if not await repo.is_mod(m.from_user.id): return
-    if not m.reply_to_message and len(m.text.split()) < 2: return
-    uid = m.reply_to_message.from_user.id if m.reply_to_message else int(m.text.split()[1])
-    await repo.unban_user(uid)
-    await m.reply(f"✅ User `{uid}` unbanned.")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 10. ENGINE BOOTSTRAPPER
-# ═══════════════════════════════════════════════════════════════════════════════
-
 async def main():
     global _start_time
     _start_time = time.time()
@@ -736,10 +794,6 @@ async def main():
 
     mc.add_handler(MessageHandler(admin_cmd, filters.command("admin") & filters.private))
     mc.add_handler(MessageHandler(broadcast_cmd, filters.command("broadcast") & filters.private))
-    mc.add_handler(MessageHandler(add_clone_cmd, filters.command("add_clone") & filters.private))
-    mc.add_handler(MessageHandler(delete_clone_cmd, filters.command("delete_clone") & filters.private))
-    mc.add_handler(MessageHandler(ban_cmd, filters.command("ban") & filters.private))
-    mc.add_handler(MessageHandler(unban_cmd, filters.command("unban") & filters.private))
 
     clone_mgr._register_handlers(mc, "main")
 
@@ -748,6 +802,9 @@ async def main():
 
     await clone_mgr.load_all_clones()
     await delivery_engine.start(config.DELIVERY_WORKERS)
+    
+    # Start 8-Hour Auto Delete Task
+    asyncio.create_task(auto_delete_messages_worker())
 
     log.info("🚀 System Fully Active!")
     await idle()
@@ -757,5 +814,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("Engine Stopped.")
-    
-    
