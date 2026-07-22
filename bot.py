@@ -94,7 +94,7 @@ class Config:
     GDRIVE_FOLDER_ID: Optional[str] = os.getenv("GDRIVE_FOLDER_ID") or None
     GDRIVE_CREDENTIALS_PATH: Optional[str] = os.getenv("GDRIVE_CREDENTIALS_PATH") or None
     MAX_FILE_SIZE: int = int(os.getenv("MAX_FILE_SIZE", str(2 * 1024**3)))
-    AUTO_DELETE_SECONDS: int = int(os.getenv("AUTO_DELETE_SECONDS", "0"))
+    AUTO_DELETE_SECONDS: int = 0  # Permanent storage by default
     PROTECT_CONTENT: bool = os.getenv("PROTECT_CONTENT", "True").lower() == "true"
     NO_FORWARD: bool = os.getenv("NO_FORWARD", "False").lower() == "true"
     ADMIN_IDS: List[int] = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
@@ -152,16 +152,7 @@ def fmt_time(seconds: int) -> str:
     return " ".join(parts)
 
 def fmt_auto_delete(seconds: int) -> str:
-    if seconds <= 0: return "कभी नहीं (Never)"
-    days, rem = divmod(seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, secs = divmod(rem, 60)
-    parts = []
-    if days: parts.append(f"{days} दिन")
-    if hours: parts.append(f"{hours} घंटे")
-    if minutes: parts.append(f"{minutes} मिनट")
-    if secs and not parts: parts.append(f"{secs} सेकंड")
-    return " ".join(parts) if parts else "कभी नहीं"
+    return "कभी नहीं (Permanent)"
 
 def extract_file_info(msg: Message) -> Optional[Dict[str, Any]]:
     media = msg.media
@@ -235,25 +226,18 @@ async def shorten_url_api(url: str) -> Optional[str]:
     return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 5. DATABASE LAYER — Multi-Connection Support (Main + Per-Clone MongoDB URIs)
+# 5. DATABASE LAYER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class Database:
-    """
-    Supports multiple independent MongoDB connections.
-    - "main" uses config.MONGODB_URI
-    - Each clone can have its own URI stored in the clone document
-    """
     _connections: Dict[str, Tuple[AsyncIOMotorClient, AsyncIOMotorDatabase]] = {}
     _init_lock = asyncio.Lock()
 
     async def connect(self, name: str = "main", uri: Optional[str] = None, db_name: Optional[str] = None) -> AsyncIOMotorDatabase:
-        """Connect (or return existing) database for a given name key."""
         if name in self._connections:
             return self._connections[name][1]
 
         async with self._init_lock:
-            # Double-check after acquiring lock
             if name in self._connections:
                 return self._connections[name][1]
 
@@ -285,18 +269,15 @@ class Database:
                         raise RuntimeError(f"[DB:{name}] Connection failed after 5 attempts")
 
     def get_db(self, name: str = "main") -> AsyncIOMotorDatabase:
-        """Get an already-connected database. Raises if not connected."""
         if name not in self._connections:
             raise RuntimeError(f"Database '{name}' not connected. Call connect() first.")
         return self._connections[name][1]
 
     async def col(self, name: str, db_name: str = "main") -> AsyncIOMotorCollection:
-        """Get a MongoDB collection from the specified database connection."""
         db = await self.connect(db_name)
         return db[name]
 
     async def close(self, name: Optional[str] = None):
-        """Close specific connection or all connections."""
         if name:
             client, _ = self._connections.pop(name, (None, None))
             if client:
@@ -321,13 +302,10 @@ class Database:
 database = Database()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6. SINGLE REPOSITORY — Now accepts db_name for per-clone DB isolation
+# 6. REPOSITORY
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class Repo:
-    """Unified MongoDB repository. Accepts `db_name` parameter to support clone-isolated databases."""
-
-    # ── Indexes (created on the main DB only; clone DBs get their own at clone start) ──
     @staticmethod
     async def ensure_indexes(db_name: str = "main"):
         db = await database.connect(db_name)
@@ -450,19 +428,6 @@ class Repo:
         return r[0]["total"] if r else 0
 
     @staticmethod
-    async def get_expired_files(db_name: str = "main") -> List[dict]:
-        col = await database.col("files", db_name)
-        now = datetime.now(timezone.utc).isoformat()
-        return await col.find({"auto_delete_at": {"$ne": None, "$lte": now}, "deleted": False}).to_list(length=500)
-
-    @staticmethod
-    async def soft_delete_file(fid: str, clone: str = "main", db_name: str = "main") -> bool:
-        col = await database.col("files", db_name)
-        r = await col.update_one({"clone_id": clone, "file_id": fid},
-                                 {"$set": {"deleted": True, "deleted_at": datetime.now(timezone.utc).isoformat()}})
-        return r.modified_count > 0
-
-    @staticmethod
     async def inc_file_dl(fid: str, clone: str = "main", db_name: str = "main") -> bool:
         col = await database.col("files", db_name)
         r = await col.update_one({"clone_id": clone, "file_id": fid}, {"$inc": {"downloads": 1}})
@@ -507,14 +472,6 @@ class Repo:
         return r.modified_count > 0
 
     @staticmethod
-    async def soft_delete_batch(bid: str, clone: str = "main", db_name: str = "main") -> bool:
-        col = await database.col("batches", db_name)
-        r = await col.update_one({"clone_id": clone, "batch_id": bid},
-                                 {"$set": {"deleted": True, "status": "deleted",
-                                           "deleted_at": datetime.now(timezone.utc).isoformat()}})
-        return r.modified_count > 0
-
-    @staticmethod
     async def count_batches(clone: Optional[str] = None, status: Optional[str] = None, db_name: str = "main") -> int:
         col = await database.col("batches", db_name)
         f = {"deleted": False}
@@ -530,12 +487,6 @@ class Repo:
         return await col.find(f).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
 
     @staticmethod
-    async def get_expired_batches(db_name: str = "main") -> List[dict]:
-        col = await database.col("batches", db_name)
-        now = datetime.now(timezone.utc).isoformat()
-        return await col.find({"auto_delete_at": {"$ne": None, "$lte": now}, "deleted": False}).to_list(length=500)
-
-    @staticmethod
     async def batch_total_storage(clone: Optional[str] = None, db_name: str = "main") -> int:
         col = await database.col("batches", db_name)
         f = {"deleted": False}
@@ -544,7 +495,7 @@ class Repo:
         r = await col.aggregate(pipe).to_list(length=1)
         return r[0]["total"] if r else 0
 
-    # ── Clones (always stored in MAIN database) ──
+    # ── Clones ──
     @staticmethod
     async def register_clone(data: dict) -> str:
         col = await database.col("clones", "main")
@@ -575,24 +526,17 @@ class Repo:
         return r.modified_count > 0
 
     @staticmethod
-    async def delete_clone(clone_id: str) -> bool:
-        col = await database.col("clones", "main")
-        r = await col.delete_one({"clone_id": clone_id})
-        return r.deleted_count > 0
-
-    @staticmethod
     async def count_clones(status: Optional[str] = None) -> int:
         col = await database.col("clones", "main")
         f = {}
         if status: f["status"] = status
         return await col.count_documents(f)
 
-    # ── Settings (per-clone, on clone's own DB) ──
+    # ── Settings ──
     DEFAULTS = {
         "start_msg": "👋 नमस्ते {first_name}! मैं एक File Store Bot हूँ। मुझे कोई भी फाइल भेजें और मैं आपको एक शेयरेबल लिंक दूंगा।",
         "force_sub_msg": "⚠️ इस Bot का उपयोग करने के लिए कृपया नीचे दिए गए Channel को Join करें!",
-        "auto_delete_msg": "⏱ {time} में यह फाइल अपने आप डिलीट हो जाएगी।",
-        "auto_del_secs": 0,
+        "auto_del_secs": 0, # Permanent by default
         "no_forward": False,
         "protect": True,
         "token_required": False,
@@ -619,48 +563,9 @@ class Repo:
         await col.update_one({"clone_id": clone}, {"$set": {"data": current}}, upsert=True)
         return True
 
-    # ── Moderators (per-clone DB) ──
-    @staticmethod
-    async def add_mod(clone: str, uid: int, by: int = 0, db_name: str = "main") -> bool:
-        col = await database.col("moderators", db_name)
-        try:
-            await col.insert_one({"clone_id": clone, "user_id": uid, "added_by": by,
-                                  "added_at": datetime.now(timezone.utc).isoformat()})
-            return True
-        except: return False
-
-    @staticmethod
-    async def remove_mod(clone: str, uid: int, db_name: str = "main") -> bool:
-        col = await database.col("moderators", db_name)
-        r = await col.delete_one({"clone_id": clone, "user_id": uid})
-        return r.deleted_count > 0
-
-    @staticmethod
-    async def is_mod(clone: str, uid: int, db_name: str = "main") -> bool:
-        col = await database.col("moderators", db_name)
-        return await col.find_one({"clone_id": clone, "user_id": uid}) is not None
-
-    @staticmethod
-    async def get_mods(clone: str, db_name: str = "main") -> List[dict]:
-        col = await database.col("moderators", db_name)
-        return await col.find({"clone_id": clone}).to_list(length=100)
-
     # ── Tokens ──
     @staticmethod
-    async def create_token(clone: str, uid: int, token: str, days: int = 30, db_name: str = "main") -> dict:
-        col = await database.col("tokens", db_name)
-        now = datetime.now(timezone.utc)
-        data = {"clone_id": clone, "user_id": uid, "token": token,
-                "created_at": now.isoformat(),
-                "expires_at": (now + timedelta(days=days)).isoformat() if days > 0 else None,
-                "uses": 0, "max_uses": 0, "active": True}
-        await col.insert_one(data)
-        return data
-
-    @staticmethod
     async def verify_token(token: str) -> Tuple[bool, Optional[str], Optional[str]]:
-        """Check across all databases? No — tokens are per-clone, checked on the clone's own DB.
-           We check on the main DB as well for main bot tokens."""
         col = await database.col("tokens", "main")
         t = await col.find_one({"token": token, "active": True})
         if not t: return False, "❌ Token नहीं मिला", None
@@ -672,27 +577,6 @@ class Repo:
             return False, "❌ Token max uses reached", None
         await col.update_one({"token": token}, {"$inc": {"uses": 1}})
         return True, None, t.get("clone_id")
-
-    # ── Channels ──
-    @staticmethod
-    async def add_channel(clone: str, cid: int, title: str = "", ctype: str = "force_sub", db_name: str = "main") -> bool:
-        col = await database.col("channels", db_name)
-        try:
-            await col.insert_one({"clone_id": clone, "channel_id": cid, "title": title, "type": ctype})
-            return True
-        except: return False
-
-    @staticmethod
-    async def remove_channel(clone: str, cid: int, db_name: str = "main") -> bool:
-        col = await database.col("channels", db_name)
-        r = await col.delete_one({"clone_id": clone, "channel_id": cid})
-        return r.deleted_count > 0
-
-    @staticmethod
-    async def get_channels(clone: str, ctype: str = "force_sub", db_name: str = "main") -> List[int]:
-        col = await database.col("channels", db_name)
-        docs = await col.find({"clone_id": clone, "type": ctype}).to_list(length=100)
-        return [d["channel_id"] for d in docs]
 
     # ── Logs ──
     @staticmethod
@@ -718,25 +602,15 @@ class Repo:
             upsert=True)
 
     @staticmethod
-    async def get_stats(clone: str, days: int = 7, db_name: str = "main") -> List[dict]:
-        col = await database.col("stats", db_name)
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-        return await col.find({"clone_id": clone, "date": {"$gte": cutoff}}).sort("date", -1).to_list(length=365)
-
-    # ── Helper: get db_name for a clone (uses clone's own mongo_uri if stored) ──
-    @staticmethod
     async def get_db_name_for_clone(clone_id: str) -> str:
-        """Returns the database connection name for a clone. If the clone has a custom mongo_uri,
-           ensures that connection is established and returns the name. Otherwise returns 'main'."""
         if clone_id == "main": return "main"
         clone_data = await Repo.get_clone(clone_id)
         if clone_data and clone_data.get("mongo_uri"):
-            # Ensure connection exists for this clone
             try:
                 await database.connect(clone_id, uri=clone_data["mongo_uri"])
             except Exception as e:
                 log.error(f"Failed to connect clone DB for {clone_id}: {e}")
-                return "main"  # fallback
+                return "main"
             return clone_id
         return "main"
 
@@ -748,12 +622,10 @@ repo = Repo()
 
 _start_time = time.time()
 main_client: Optional[Client] = None
-_clients: Dict[str, Client] = {}  # clone_id -> Client
+_clients: Dict[str, Client] = {}
 _upload_buffers: Dict[str, Dict[str, Tuple[List[dict], float]]] = defaultdict(lambda: defaultdict(lambda: ([], 0.0)))
 _delivery_queue: asyncio.Queue = asyncio.Queue()
 _delivery_cancel: Dict[str, asyncio.Event] = {}
-_delivery_active: Dict[str, asyncio.Task] = {}
-_pending_deletions: Dict[str, List[Tuple[int, int, float]]] = defaultdict(list)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 8. RATE LIMITER
@@ -808,13 +680,6 @@ class KB:
         return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=cb)]])
 
     @staticmethod
-    def confirm(action: str, clone: str = ""):
-        cb = f"conf_{action}" + (f":{clone}" if clone else "")
-        cc = f"cancel_{action}" + (f":{clone}" if clone else "")
-        return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes", callback_data=cb),
-                                      InlineKeyboardButton("❌ No", callback_data=cc)]])
-
-    @staticmethod
     def sub_link(link: str):
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📢 Join Channel", url=link)],
@@ -828,52 +693,7 @@ class KB:
 kb = KB()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 10. AUTO-DELETE SCHEDULER
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class AutoDeleteScheduler:
-    def __init__(self):
-        self._task: Optional[asyncio.Task] = None
-        self._running = False
-
-    async def start(self):
-        if self._running: return
-        self._running = True
-        self._task = asyncio.create_task(self._loop())
-        log.info("Auto-delete scheduler started")
-
-    async def stop(self):
-        self._running = False
-        if self._task: self._task.cancel()
-        try: await self._task
-        except: pass
-
-    def schedule(self, clone: str, chat_id: int, msg_id: int, secs: int):
-        if secs <= 0: return
-        _pending_deletions[clone].append((chat_id, msg_id, time.time() + secs))
-
-    async def _loop(self):
-        while self._running:
-            try:
-                now = time.time()
-                for clone, items in list(_pending_deletions.items()):
-                    client = _clients.get(clone) or main_client
-                    if not client: continue
-                    remaining = []
-                    for chat_id, msg_id, del_at in items:
-                        if del_at <= now:
-                            try: await client.delete_messages(chat_id, msg_id)
-                            except: pass
-                        else: remaining.append((chat_id, msg_id, del_at))
-                    _pending_deletions[clone] = remaining
-            except Exception as e:
-                log.error(f"Auto-delete error: {e}")
-            await asyncio.sleep(config.AUTO_DELETE_CHECK_INTERVAL)
-
-auto_del_sched = AutoDeleteScheduler()
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 11. BATCH DELIVERY ENGINE
+# 10. BATCH DELIVERY ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class DeliveryEngine:
@@ -892,11 +712,11 @@ class DeliveryEngine:
         self._workers.clear()
 
     def enqueue(self, clone: str, uid: int, chat_id: int, batch_id: str,
-                msg_id: int, auto_del: int = 0, protect: bool = True):
+                msg_id: int, protect: bool = True):
         _delivery_queue.put_nowait({
             "clone": clone, "uid": uid, "chat_id": chat_id,
             "batch_id": batch_id, "msg_id": msg_id,
-            "auto_del": auto_del, "protect": protect,
+            "protect": protect,
         })
 
     def cancel(self, clone: str, uid: int, batch_id: str):
@@ -918,10 +738,8 @@ class DeliveryEngine:
         chat_id = job["chat_id"]
         batch_id = job["batch_id"]
         progress_msg_id = job["msg_id"]
-        auto_del = job["auto_del"]
         protect = job["protect"]
 
-        # Determine which DB this clone uses
         db_name = await repo.get_db_name_for_clone(clone)
 
         cancel_key = f"{clone}:{uid}:{batch_id}"
@@ -985,15 +803,12 @@ class DeliveryEngine:
             await repo.update_batch_status(batch_id, clone, "completed" if failed == 0 else "partial", db_name)
             await repo.inc_batch_dl(batch_id, clone, db_name)
             try:
-                t = fmt_auto_delete(auto_del) if auto_del > 0 else "Never"
                 await client.edit_message_text(
                     chat_id, progress_msg_id,
                     f"{'✅' if failed == 0 else '⚠️'} **Delivery {'Complete' if failed == 0 else 'Partial'}**\n\n"
-                    f"Sent: {sent}/{total}\nFailed: {failed}\n⏱ Auto-delete: {t}"
+                    f"Sent: {sent}/{total}\nFailed: {failed}\n💾 Status: Permanent Storage"
                 )
             except: pass
-            if auto_del > 0:
-                auto_del_sched.schedule(clone, chat_id, progress_msg_id, auto_del)
         else:
             await repo.update_batch_status(batch_id, clone, "cancelled", db_name)
             try:
@@ -1008,8 +823,9 @@ class DeliveryEngine:
 
 delivery_engine = DeliveryEngine()
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# 12. CLONE MANAGER — Now with per-clone MongoDB URI support
+# 11. CLONE MANAGER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class CloneManager:
@@ -1024,12 +840,6 @@ class CloneManager:
         return main_client
 
     def _register_handlers(self, client: Client, clone_id: str):
-        """
-        Register all handlers for a bot client.
-        Each clone handler resolves its own db_name via repo.get_db_name_for_clone().
-        """
-
-        # ── Helper to get db_name for this clone ──
         async def _db():
             return await repo.get_db_name_for_clone(clone_id)
 
@@ -1042,7 +852,7 @@ class CloneManager:
                                 user.first_name or "", user.last_name or "", db_name)
 
             if await repo.is_banned(user.id, clone_id, db_name):
-                await m.reply("❌ आप इस Bot पर बैन हैं。")
+                await m.reply("❌ आप इस Bot पर बैन हैं।")
                 return
 
             ok, wait = rate_limiter.check(user.id, clone_id)
@@ -1058,7 +868,6 @@ class CloneManager:
                 if not all_ok:
                     msg = settings.get("force_sub_msg", "⚠️ कृपया Channel Join करें!")
                     msg = msg.replace("{first_name}", user.first_name or "User")
-                    msg = msg.replace("{time}", fmt_auto_delete(settings.get("auto_del_secs", 0)))
                     await m.reply(msg, reply_markup=kb.sub_link(link))
                     return
 
@@ -1066,7 +875,7 @@ class CloneManager:
             param = args[1] if len(args) > 1 else ""
 
             if settings.get("token_required") and not param:
-                await m.reply("🔑 इस Bot को Access Token चाहिए。 /start <token> का उपयोग करें。")
+                await m.reply("🔑 इस Bot को Access Token चाहिए। /start <token> का उपयोग करें।")
                 return
 
             if param and not param.startswith(("f_", "b_")):
@@ -1082,14 +891,10 @@ class CloneManager:
                     await m.reply("❌ File नहीं मिली या डिलीट हो चुकी है।")
                     return
                 caption = fd.get("caption", "")
-                if settings.get("auto_del_secs", 0) > 0:
-                    caption += f"\n\n⏱ {fmt_auto_delete(settings['auto_del_secs'])} में डिलीट होगी"
                 try:
-                    cp = await c.copy_message(m.chat.id, config.DB_CHANNEL_ID, fd["db_msg_id"],
-                                              caption=caption, protect_content=settings.get("protect", True))
+                    await c.copy_message(m.chat.id, config.DB_CHANNEL_ID, fd["db_msg_id"],
+                                         caption=caption, protect_content=settings.get("protect", True))
                     await repo.inc_file_dl(fid, clone_id, db_name)
-                    if settings.get("auto_del_secs", 0) > 0:
-                        auto_del_sched.schedule(clone_id, m.chat.id, cp.id, settings["auto_del_secs"])
                 except Exception as e:
                     await m.reply(f"❌ File भेजने में त्रुटि: {e}")
                     log.error(f"File send error: {e}")
@@ -1099,7 +904,7 @@ class CloneManager:
                 bid = param[2:]
                 batch = await repo.get_batch_by_id(bid, clone_id, db_name)
                 if not batch or batch.get("deleted"):
-                    await m.reply("❌ Batch नहीं मिला या डिलीट हो चुका है。")
+                    await m.reply("❌ Batch नहीं मिला या डिलीट हो चुका है।")
                     return
                 if batch.get("status") in ("delivering", "completed"):
                     await m.reply(f"❌ यह Batch पहले से `{batch['status']}` है।")
@@ -1109,8 +914,7 @@ class CloneManager:
                     f"{batch['total_files']} files, {fmt_size(batch['total_size'])}\n"
                     f"Starting delivery...",
                     reply_markup=kb.cancel_dl(bid, clone_id))
-                delivery_engine.enqueue(clone_id, user.id, m.chat.id, bid, info.id,
-                                        settings.get("auto_del_secs", 0), settings.get("protect", True))
+                delivery_engine.enqueue(clone_id, user.id, m.chat.id, bid, info.id, settings.get("protect", True))
                 return
 
             msg = settings.get("start_msg", "👋 Hello {first_name}! Send me a file.")
@@ -1118,11 +922,9 @@ class CloneManager:
             msg = msg.replace("{last_name}", user.last_name or "")
             msg = msg.replace("{username}", f"@{user.username}" if user.username else "User")
             msg = msg.replace("{bot_name}", (await c.get_me()).first_name or "Bot")
-            if settings.get("auto_del_secs", 0) > 0:
-                msg += f"\n\n⏱ Auto-delete: {fmt_auto_delete(settings['auto_del_secs'])}"
             await m.reply(msg, reply_markup=kb.main(user.id == config.OWNER_ID or user.id in config.ADMIN_IDS))
 
-        # ── done command ──
+        # ── done command (SINGLE BATCH URL GENERATOR) ──
         async def done_c(c: Client, m: Message):
             db_name = await _db()
             user = m.from_user
@@ -1130,7 +932,7 @@ class CloneManager:
             key = str(user.id)
             buf = _upload_buffers[clone_id].get(key)
             if not buf or not buf[0]:
-                await m.reply("📭 Buffer में कोई फाइल नहीं है。 पहले फाइलें भेजें।")
+                await m.reply("📭 Buffer में कोई फाइल नहीं है। पहले फाइलें भेजें।")
                 return
 
             files, _ = buf
@@ -1153,12 +955,9 @@ class CloneManager:
                 "caption": "", "status": "active",
                 "downloads": 0, "progress": {"sent": 0, "failed": 0},
                 "created_at": datetime.now(timezone.utc).isoformat(),
-                "auto_delete_at": None, "deleted": False,
+                "auto_delete_at": None, # PERMANENT STORAGE
+                "deleted": False,
             }
-            settings = await repo.get_settings(clone_id, db_name)
-            ads = settings.get("auto_del_secs", config.AUTO_DELETE_SECONDS)
-            if ads > 0:
-                data["auto_delete_at"] = (datetime.now(timezone.utc) + timedelta(seconds=ads)).isoformat()
 
             await repo.create_batch(data, db_name)
             del _upload_buffers[clone_id][key]
@@ -1167,15 +966,18 @@ class CloneManager:
             cd = await repo.get_clone(clone_id)
             if cd: bot_uname = cd.get("bot_username", bot_uname)
 
+            # SIRF EK SINGLE URL PROVIDE KIYA JATA HAI
             link = f"https://t.me/{bot_uname}?start=b_{token}"
             short = await shorten_url_api(link)
             if short: link = short
 
             await m.reply(
-                f"✅ **Batch Created!**\n\n"
-                f"📄 {len(files)} फाइलें\n📏 {fmt_size(total_size)}\n\n"
-                f"🔗 `{link}`\n\n"
-                f"Users पर क्लिक करने पर सभी files मिलेंगी。",
+                f"✅ **Batch Upload Complete!**\n\n"
+                f"📄 **कुल Files:** {len(files)}\n"
+                f"📏 **कुल Size:** {fmt_size(total_size)}\n"
+                f"💾 **Storage Type:** Permanent (कभी Delete नहीं होगा)\n\n"
+                f"🔗 **Aapka Single Link:**\n`{link}`\n\n"
+                f"Is single link se user ko sabhi files mil jayengi.",
                 disable_web_page_preview=True,
             )
             await repo.add_log(clone_id, user.id, f"Created batch {batch_id[:16]}...", db_name)
@@ -1189,9 +991,9 @@ class CloneManager:
             if buf and buf[0]:
                 await m.reply(f"❌ {len(buf[0])} buffered files कैंसिल किए गए।")
                 return
-            await m.reply("📭 Buffer खाली है या कोई active delivery नहीं है।")
+            await m.reply("📭 Buffer खाली है।")
 
-        # ── media handler ──
+        # ── media handler (BUFFER FILE WITHOUT SINGLE LINK REPLIES) ──
         async def media_c(c: Client, m: Message):
             db_name = await _db()
             user = m.from_user
@@ -1201,7 +1003,7 @@ class CloneManager:
 
             ok, wait = rate_limiter.check(user.id, clone_id)
             if not ok:
-                await m.reply(f"⏳ कृपया {wait} सेकंड रुकें。")
+                await m.reply(f"⏳ कृपया {wait} सेकंड रुकें।")
                 return
 
             settings = await repo.get_settings(clone_id, db_name)
@@ -1236,6 +1038,8 @@ class CloneManager:
             token = generate_token()
             fid = f"f_{token}"
             now = datetime.now(timezone.utc)
+            
+            # File data stored permanently in DB
             fd = {
                 "file_id": fid, "file_unique_id": info["file_unique_id"],
                 "clone_id": clone_id, "user_id": user.id,
@@ -1244,20 +1048,11 @@ class CloneManager:
                 "caption": m.caption or "", "db_msg_id": db_msg_id,
                 "access_token": token, "downloads": 0,
                 "created_at": now.isoformat(),
-                "auto_delete_at": (now + timedelta(seconds=settings.get("auto_del_secs", 0))).isoformat()
-                if settings.get("auto_del_secs", 0) > 0 else None,
+                "auto_delete_at": None, # PERMANENT - NO AUTOMATIC DELETE
                 "deleted": False,
             }
             await repo.store_file(fd, db_name)
             await repo.inc_user_files(user.id, clone_id, 1, db_name)
-
-            bot_uname = config.BOT_USERNAME
-            cd = await repo.get_clone(clone_id)
-            if cd: bot_uname = cd.get("bot_username", bot_uname)
-
-            link = f"https://t.me/{bot_uname}?start=f_{fid}"
-            short = await shorten_url_api(link)
-            if short: link = short
 
             key = str(user.id)
             buf_files, _ = _upload_buffers[clone_id][key]
@@ -1265,12 +1060,11 @@ class CloneManager:
             _upload_buffers[clone_id][key] = (buf_files, time.time())
             count = len(buf_files)
 
+            # SIRF QUEUE / BUFFER STATUS DEGA (NO MULTIPLE LINKS GENERATED)
             await m.reply(
-                f"✅ **File Stored!**\n\n"
-                f"📄 {info['file_name'][:40]}\n📏 {fmt_size(info['file_size'])}\n\n"
-                f"🔗 `{link}`\n\n"
-                f"📦 **Batch:** {count} file{'s' if count > 1 else ''}\n"
-                f"और files भेजें या /done करें। /cancel से buffer खाली करें।",
+                f"📥 **File Receive Ho Gayi!** ({count} Total)\n"
+                f"📄 `{info['file_name'][:35]}`\n\n"
+                f"⚠️ **Single Link prapt karne ke liye sabhi files bhejne ke baad `/done` likhein.**",
                 disable_web_page_preview=True,
             )
             await repo.add_log(clone_id, user.id, f"Stored {fid[:16]}...", db_name)
@@ -1303,11 +1097,10 @@ class CloneManager:
             if data == "help":
                 await q.message.edit_text(
                     "**📚 Help**\n\n"
-                    "• कोई भी file भेजें → शेयरेबल लिंक\n"
-                    "• और files भेजें → batch में जुड़ेंगी\n"
-                    "• /done → batch फाइनल करें\n"
-                    "• /cancel → buffer खाली करें\n\n"
-                    "**Admin commands:**\n/admin, /stats, /broadcast, /add_clone, /backup",
+                    "• Files भेजें → Buffer में स्टोर होंगी\n"
+                    "• /done → Single Link जनरेट करें\n"
+                    "• /cancel → Buffer खाली करें\n\n"
+                    "**Note:** आपकी फ़ाइलें Permanently Safe हैं और कभी Automatic Delete नहीं होंगी।",
                     reply_markup=kb.back())
 
         client.add_handler(MessageHandler(start_c, filters.command("start") & filters.private))
@@ -1320,11 +1113,9 @@ class CloneManager:
         client.add_handler(CallbackQueryHandler(cb_c))
 
     async def load_all_clones(self):
-        """Load all active clones from MAIN database. Each clone uses its own MongoDB if mongo_uri is set."""
         clones = await repo.get_all_clones("active")
         for c in clones:
             try:
-                # If clone has custom mongo_uri, establish its DB connection first
                 if c.get("mongo_uri"):
                     try:
                         await database.connect(c["clone_id"], uri=c["mongo_uri"])
@@ -1344,10 +1135,6 @@ class CloneManager:
                 log.error(f"Failed to load clone {c['clone_id']}: {e}")
 
     async def create_clone(self, token: str, mongo_uri: Optional[str] = None) -> Optional[dict]:
-        """
-        Create a new clone bot with optional separate MongoDB URI.
-        Usage: /add_clone <BOT_TOKEN> [MONGODB_URI]
-        """
         temp = Client("_val", api_id=config.API_ID, api_hash=config.API_HASH,
                       bot_token=token, in_memory=True)
         try:
@@ -1359,12 +1146,11 @@ class CloneManager:
                 "clone_id": cid, "bot_token": token,
                 "bot_username": me.username or f"bot_{me.id}",
                 "bot_id": me.id, "status": "active",
-                "mongo_uri": mongo_uri,  # <-- stored for DB isolation
+                "mongo_uri": mongo_uri,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             await repo.register_clone(data)
 
-            # If custom URI provided, connect clone DB and ensure indexes
             if mongo_uri:
                 try:
                     await database.connect(cid, uri=mongo_uri)
@@ -1372,7 +1158,6 @@ class CloneManager:
                     log.info(f"Clone {cid}: custom MongoDB connected and indexed")
                 except Exception as e:
                     log.error(f"Clone {cid}: custom MongoDB connection failed: {e}")
-                    # Still create the clone; it will use main DB as fallback
 
             client = Client(f"clone_{cid}", api_id=config.API_ID, api_hash=config.API_HASH,
                             bot_token=token, workers=30, sleep_threshold=60)
@@ -1391,21 +1176,6 @@ class CloneManager:
             try: await client.stop()
             except: pass
 
-    async def restart_clone(self, cid: str) -> bool:
-        await self.stop_clone(cid)
-        await asyncio.sleep(1)
-        cd = await repo.get_clone(cid)
-        if cd:
-            client = Client(f"clone_{cid}", api_id=config.API_ID, api_hash=config.API_HASH,
-                            bot_token=cd["bot_token"], workers=30, sleep_threshold=60)
-            self._register_handlers(client, cid)
-            try:
-                await client.start()
-                _clients[cid] = client
-                return True
-            except: pass
-        return False
-
     async def shutdown_all(self):
         for cid in list(_clients.keys()):
             await self.stop_clone(cid)
@@ -1416,7 +1186,7 @@ class CloneManager:
 clone_mgr = CloneManager()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 13. ADMIN CALLBACK HANDLER
+# 12. ADMIN CALLBACK HANDLER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
@@ -1430,11 +1200,9 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
         await q.answer("❌ Unauthorized", show_alert=True)
         return
 
-    # Dashboard
     if data == "admin_dashboard":
         await show_admin_dash(c, msg, True); return
 
-    # Stats
     if data == "a_stats":
         db_name = await repo.get_db_name_for_clone(clone_id)
         tu = await repo.count_users(db_name=db_name)
@@ -1455,7 +1223,6 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
             f"🖥 CPU: `{cpu}%` RAM: `{mem.percent}%`\n⏱ Uptime: `{up}`",
             reply_markup=kb.back()); return
 
-    # Users
     if data == "a_users":
         db_name = await repo.get_db_name_for_clone(clone_id)
         users = await repo.get_all_users(db_name=db_name, limit=100)
@@ -1465,15 +1232,13 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
         if len(users) > 50: text += f"\n... +{len(users)-50} more"
         await msg.edit_text(text, reply_markup=kb.back()); return
 
-    # Files
     if data == "a_files":
         db_name = await repo.get_db_name_for_clone(clone_id)
         tf = await repo.count_files(db_name=db_name)
         storage = await repo.total_storage(db_name=db_name)
-        await msg.edit_text(f"**📁 Files**\nTotal: `{tf}`\nStorage: `{fmt_size(storage)}`",
+        await msg.edit_text(f"**📁 Files**\nTotal: `{tf}`\nStorage: `{fmt_size(storage)}`\nStorage Type: Permanent",
                             reply_markup=kb.back()); return
 
-    # Batches list
     if data == "a_batches":
         db_name = await repo.get_db_name_for_clone(clone_id)
         batches = await repo.get_batches(db_name=db_name, limit=10)
@@ -1484,10 +1249,8 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
             s = b.get("status","?")
             icon = {"active":"🟢","delivering":"🟡","completed":"✅","partial":"⚠️","cancelled":"❌","deleted":"🗑"}.get(s,"⚪")
             text += f"{icon} `{b['batch_id'][:16]}…` {b['total_files']} files [{s}]\n"
-        text += "\n/details <batch_id> for full info"
         await msg.edit_text(text, reply_markup=kb.back()); return
 
-    # Clones
     if data == "a_clones":
         clones = await repo.get_all_clones()
         text = f"**🤖 Clones ({len(clones)}):**\n\n"
@@ -1496,63 +1259,13 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
             icon = "🟢" if s == "active" else "🔴"
             mu = " 🗄" if c.get("mongo_uri") else ""
             text += f"{icon} `{c['clone_id']}` — @{c.get('bot_username','?')} [{s}]{mu}\n"
-        text += "\n`/add_clone <token> [mongo_uri]` — mu for separate DB"
         await msg.edit_text(text, reply_markup=kb.back()); return
 
-    # Broadcast
-    if data == "a_broadcast":
-        await msg.edit_text("📢 **Broadcast**\n\n`/broadcast` (reply to a message) to send to all users.\n\nProgress shown in real-time.",
-                            reply_markup=kb.back()); return
-
-    
-    # Settings
-    if data == "a_settings":
-        await msg.edit_text(
-            "⚙️ **Global Settings**\n\nConfigure via .env:\n"
-            "`FORCE_SUB_CHANNELS`, `BACKUP_CHANNELS`\n"
-            "`PROTECT_CONTENT`, `AUTO_DELETE_SECONDS`\n"
-            "`RATE_LIMIT_*`, `SHORTENER_*`\n\n"
-            "Clone-specific: `/set_start`, `/add_fsub`, etc.",
-            reply_markup=kb.back()
-        )
-        return
-
-    if data == "conf_restart_all":
-        InlineKeyboardButton("🔄 Restart", callback_data="a_restart")
-        try:
-            await clone_mgr.shutdown_all()
-            await database.close()
-        except Exception as e:
-            log.error(f"Shutdown error: {e}")
-
-        await asyncio.sleep(2)
-
-        os._exit(0)
-        return
-
-    if data == "cancel_restart_all":
-        await show_admin_dash(c, msg, True)
-        return
-
-    # Backup
-    if data == "a_backup":
-        await msg.edit_text(
-            "💾 **Backup**\n\n"
-            "`/backup` to export file records to JSON.\n"
-            "Sent to log channel if configured.\n\n"
-            "GDrive: " + ("✅ configured" if config.GDRIVE_FOLDER_ID else "❌ not set"),
-            reply_markup=kb.back()
-        )
-        return
-
-    # Cancel delivery
     if data.startswith("cancel_dl:"):
         parts = data.split(":")
         bid = parts[1]
         cl = parts[2] if len(parts) > 2 else clone_id
-
         delivery_engine.cancel(cl, uid, bid)
-
         await q.answer("⏹ Delivery cancelled", show_alert=True)
         return
 
@@ -1584,7 +1297,7 @@ async def show_admin_dash(c: Client, msg: Message, edit: bool = False):
         await msg.reply(text, reply_markup=kb.admin())
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 14. MAIN BOT COMMAND HANDLERS
+# 13. MAIN BOT COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def admin_command(c: Client, m: Message):
@@ -1629,22 +1342,10 @@ async def broadcast_command(c: Client, m: Message):
     await pm.edit_text(f"✅ Broadcast done!\n✅ {success}\n❌ {failed}\n📊 {total}")
 
 async def add_clone_command(c: Client, m: Message):
-    """
-    /add_clone <BOT_TOKEN> [MONGODB_URI]
-    If MONGODB_URI is provided, the clone bot will use its own separate database.
-    """
     if m.from_user.id != config.OWNER_ID: return
     parts = m.text.split(maxsplit=2)
     if len(parts) < 2:
-        await m.reply(
-            "Usage: `/add_clone <BOT_TOKEN> [MONGODB_URI]`\n\n"
-            "• `BOT_TOKEN` — BotFather से Token\n"
-            "• `MONGODB_URI` (optional) — Clone के लिए अलग MongoDB URI\n"
-            "  अगर नहीं देंगे तो Main bot का DB use होगा।\n\n"
-            "**Examples:**\n"
-            "`/add_clone 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`\n"
-            "`/add_clone 123456:ABC-DEF... mongodb+srv://user:pass@clone.mongodb.net/CloneDB`"
-        )
+        await m.reply("Usage: `/add_clone <BOT_TOKEN> [MONGODB_URI]`")
         return
 
     token = parts[1].strip()
@@ -1652,11 +1353,7 @@ async def add_clone_command(c: Client, m: Message):
 
     result = await clone_mgr.create_clone(token, mongo_uri)
     if result:
-        msg = f"✅ **Clone added!**\nID: `{result['clone_id']}`\n@ {result['bot_username']}"
-        if result.get("mongo_uri"):
-            msg += "\n🗄 **Isolated Database:** ✅ (अलग MongoDB URI)"
-        else:
-            msg += "\n🗄 **Database:** Main (shared)"
+        msg = f"✅ **Clone added!**\nID: `{result['clone_id']}`\n@{result['bot_username']}"
         await m.reply(msg)
     else:
         await m.reply("❌ Failed. Check token or logs.")
@@ -1676,7 +1373,7 @@ async def backup_command(c: Client, m: Message):
         await pm.edit_text(f"❌ Backup failed: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 15. MAIN ENTRY POINT
+# 14. MAIN ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def main():
@@ -1684,18 +1381,13 @@ async def main():
     _start_time = time.time()
 
     log.info("=" * 60)
-    log.info("🤖 FILE STORE BOT STARTING")
+    log.info("🤖 FILE STORE BOT STARTING (PERMANENT SINGLE-LINK BUILD)")
     log.info("=" * 60)
 
     Config.validate()
-    log.info("✅ Config OK")
-
-    # Connect MAIN database
     await database.connect("main")
     await repo.ensure_indexes("main")
-    log.info("✅ Main DB ready")
 
-    # Init main bot
     main_client = await clone_mgr.init_main()
     main_client.add_handler(MessageHandler(admin_command, filters.command("admin") & filters.private))
     main_client.add_handler(MessageHandler(stats_command, filters.command("stats") & filters.private))
@@ -1707,13 +1399,8 @@ async def main():
     await main_client.start()
     log.info(f"✅ Main bot: @{config.BOT_USERNAME}")
 
-    # Load all clones (each with its own DB if configured)
     await clone_mgr.load_all_clones()
-
-    # Start services
     await delivery_engine.start(config.DELIVERY_WORKERS)
-    await auto_del_sched.start()
-    log.info("✅ Services started")
 
     log.info("=" * 60)
     log.info(f"🚀 BOT RUNNING | Owner: {config.OWNER_ID}")
@@ -1734,7 +1421,6 @@ async def _daily_stats_loop():
 async def shutdown():
     log.info("🛑 Shutting down...")
     await delivery_engine.stop()
-    await auto_del_sched.stop()
     await clone_mgr.shutdown_all()
     await database.close()
     log.info("✅ Shutdown complete")
