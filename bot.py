@@ -639,49 +639,6 @@ class Database:
 db = Database()
 
 
-      # --- CUSTOM THUMBNAIL MANAGERS ---
-    async def set_thumbnail(self, user_id: int, file_id: str):
-        await self.thumbnails.update_one(
-            {"user_id": user_id},
-            {"$set": {"user_id": user_id, "file_id": file_id, "updated_at": datetime.now(timezone.utc)}},
-            upsert=True
-        )
-
-    async def get_thumbnail(self, user_id: int) -> Optional[str]:
-        doc = await self.thumbnails.find_one({"user_id": user_id})
-        return doc.get("file_id") if doc else None
-
-    # --- MULTI-CLONE ENGINE DB MANAGERS ---
-    async def add_clone(self, clone_id: str, bot_token: str, owner_id: int, bot_username: str):
-        doc = {
-            "clone_id": clone_id,
-            "bot_token": bot_token,
-            "owner_id": owner_id,
-            "bot_username": bot_username,
-            "is_active": True,
-            "created_at": datetime.now(timezone.utc)
-        }
-        await self.clones.insert_one(doc)
-
-    async def get_active_clones(self) -> List[Dict[str, Any]]:
-        cursor = self.clones.find({"is_active": True})
-        return await cursor.to_list(length=None)
-
-    async def delete_clone(self, clone_id: str) -> bool:
-        r = await self.clones.delete_one({"clone_id": clone_id})
-        return r.deleted_count > 0
-
-    # --- SYSTEM SETTINGS DYNAMIC GUI DB ---
-    async def update_setting(self, key: str, value: Any):
-        await self.settings.update_one(
-            {"key": key},
-            {"$set": {"key": key, "value": value, "updated_at": datetime.now(timezone.utc)}},
-            upsert=True
-        )
-
-# Database instance initialization strictly AFTER all class methods are defined
-db = Database()
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # 6. RATE LIMITER & SPAM PROTECTION MIDDLEWARE
 # ═══════════════════════════════════════════════════════════════════════════════
