@@ -453,10 +453,18 @@ class Database:
         r = await self.captions.delete_one({"user_id": user_id})
         return r.deleted_count > 0
 
-    # --- MULTI-CLONE ENGINE DB MANAGERS ---
+        # --- MULTI-CLONE ENGINE DB MANAGERS ---
     async def add_clone(self, clone_id: str, bot_token: str, owner_id: int, bot_username: str):
         doc = {
             "clone_id": clone_id,
+            "bot_token": bot_token,
+            "owner_id": owner_id,
+            "bot_username": bot_username,
+            "is_active": True,
+            "created_at": datetime.now(timezone.utc)
+        }
+        await self.clones.insert_one(doc)
+
     # --- FILE MANAGERS ---
     async def add_file(self, data: Dict[str, Any]) -> str:
         code = generate_token(8)
