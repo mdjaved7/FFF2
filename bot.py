@@ -1512,10 +1512,11 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
             "`PROTECT_CONTENT`, `AUTO_DELETE_SECONDS`\n"
             "`RATE_LIMIT_*`, `SHORTENER_*`\n\n"
             "Clone-specific: `/set_start`, `/add_fsub`, etc.",
-            reply_markup=kb.back()); return
+            reply_markup=kb.back()
+        )
+        return
 
-    
-           # Restart
+    # Restart
     if data == "a_restart":
         await msg.edit_text(
             "🔄 **Restart all bots?**",
@@ -1529,7 +1530,6 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
         await clone_mgr.shutdown_all()
         await asyncio.sleep(2)
 
-        global main_client, _start_time
         main_client = await clone_mgr.init_main()
         clone_mgr._register_handlers(main_client, "main")
         await main_client.start()
@@ -1550,13 +1550,14 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
 
     # Backup
     if data == "a_backup":
-        
         await msg.edit_text(
-            "💾 **Backup**\n\n`/backup` to export file records to JSON.\n"
+            "💾 **Backup**\n\n"
+            "`/backup` to export file records to JSON.\n"
             "Sent to log channel if configured.\n\n"
             "GDrive: " + ("✅ configured" if config.GDRIVE_FOLDER_ID else "❌ not set"),
-            reply_markup=kb.back()); return
-
+            reply_markup=kb.back()
+        )
+        return
     # Cancel delivery
     if data.startswith("cancel_dl:"):
         parts = data.split(":")
