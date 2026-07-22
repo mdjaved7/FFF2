@@ -402,7 +402,7 @@ class Database:
     async def get_total_files(self) -> int:
         return await self.files.count_documents({"deleted": False})
 
-        # --- AUTO-DELETE QUEUE ---
+            # --- AUTO-DELETE QUEUE ---
     async def add_pending_deletion(self, chat_id: int, message_id: int, delay_seconds: int):
         if delay_seconds <= 0:
             return
@@ -413,17 +413,71 @@ class Database:
             "delete_at": delete_at
         })
 
+    async def get_expired_deletions(self) -> List[Dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        cursor = self.pending_del.find({"delete_at": {"$lte": now}})
+        return await cursor.to_list(length=200)
+
     async def remove_pending_deletion(self, doc_id):
         await self.pending_del.delete_one({"_id": doc_id})
 
-    # --- THUMBNAIL FUNCTIONS ---
+    # --- CUSTOM THUMBNAIL MANAGERS ---
     async def set_thumbnail(self, user_id: int, file_id: str):
-        pass
+        await self.thumbnails.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "file_id": file_id, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True
+        )
 
     async def get_thumbnail(self, user_id: int) -> Optional[str]:
-        pass
+        doc = await self.thumbnails.find_one({"user_id": user_id})
+        return doc.get("file_id") if doc else None
 
-    # --- SETTINGS FUNCTIONS ---
+    async def delete_thumbnail(self, user_id: int) -> bool:
+        r = await self.thumbnails.delete_one({"user_id": user_id})
+        return r.deleted_count > 0
+
+    # --- CUSTOM CAPTION MANAGERS ---
+    async def set_caption(self, user_id: int, caption_text: str):
+        await self.captions.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "caption": caption_text, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True
+        )
+
+    async def get_caption(self, user_id: int) -> Optional[str]:
+        doc = await self.captions.find_one({"user_id": user_id})
+        return doc.get("caption") if doc else None
+
+    async def delete_caption(self, user_id: int) -> bool:
+        r = await self.captions.delete_one({"user_id": user_id})
+        return r.deleted_count > 0
+
+    # --- MULTI-CLONE ENGINE DB MANAGERS ---
+    async def add_clone(self, clone_id: str, bot_token: str, owner_id: int, bot_username: str):
+        doc = {
+            "clone_id": clone_id,
+            "bot_token": bot_token,
+            "owner_id": owner_id,
+            "bot_username": bot_username,
+            "is_active": True,
+            "created_at": datetime.now(timezone.utc)
+        }
+        await self.clones.insert_one(doc)
+
+    async def get_active_clones(self) -> List[Dict[str, Any]]:
+        cursor = self.clones.find({"is_active": True})
+        return await cursor.to_list(length=None)
+
+    async def delete_clone(self, clone_id: str) -> bool:
+        r = await self.clones.delete_one({"clone_id": clone_id})
+        return r.deleted_count > 0
+
+    # --- SYSTEM SETTINGS DYNAMIC GUI DB ---
+    async def get_setting(self, key: str, default: Any = None) -> Any:
+        doc = await self.settings.find_one({"key": key})
+        return doc["value"] if doc else default
+
     async def update_setting(self, key: str, value: Any):
         await self.settings.update_one(
             {"key": key},
@@ -431,8 +485,9 @@ class Database:
             upsert=True
         )
 
-# Database instance initialization strictly AFTER all class methods are defined
+# CLASS KHATAM HONE KE BAAD (SABSE AAKHIR MEIN INITIALIZE KAREIN)
 db = Database()
+
 
 
 
