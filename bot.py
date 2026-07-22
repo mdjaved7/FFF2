@@ -1515,7 +1515,7 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
             reply_markup=kb.back()); return
 
     
-        # Restart
+            # Restart
     if data == "conf_restart_all":
         global _start_time
         await msg.edit_text("🔄 Restarting...")
@@ -1560,6 +1560,7 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
 
 
 async def show_admin_dash(c: Client, msg: Message, edit: bool = False):
+    global _start_time
     tu = await repo.count_users(); tf = await repo.count_files()
     tb = await repo.count_batches(); tc = await repo.count_clones()
     ac = await repo.count_clones("active")
