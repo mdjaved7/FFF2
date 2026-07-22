@@ -1504,19 +1504,20 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
         await msg.edit_text("📢 **Broadcast**\n\n`/broadcast` (reply to a message) to send to all users.\n\nProgress shown in real-time.",
                             reply_markup=kb.back()); return
 
+    
     # Settings
-    if data == "a_settings":
-        await msg.edit_text(
-            "⚙️ **Global Settings**\n\nConfigure via .env:\n"
-            "`FORCE_SUB_CHANNELS`, `BACKUP_CHANNELS`\n"
-            "`PROTECT_CONTENT`, `AUTO_DELETE_SECONDS`\n"
-            "`RATE_LIMIT_*`, `SHORTENER_*`\n\n"
-            "Clone-specific: `/set_start`, `/add_fsub`, etc.",
-            reply_markup=kb.back()
-        )
-        return
+if data == "a_settings":
+    await msg.edit_text(
+        "⚙️ **Global Settings**\n\nConfigure via .env:\n"
+        "`FORCE_SUB_CHANNELS`, `BACKUP_CHANNELS`\n"
+        "`PROTECT_CONTENT`, `AUTO_DELETE_SECONDS`\n"
+        "`RATE_LIMIT_*`, `SHORTENER_*`\n\n"
+        "Clone-specific: `/set_start`, `/add_fsub`, etc.",
+        reply_markup=kb.back()
+    )
+    return
 
-    if data == "conf_restart_all":
+if data == "conf_restart_all":
     await msg.edit_text("🔄 Restarting...")
 
     try:
@@ -1530,9 +1531,9 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
     os._exit(0)
     return
 
-    if data == "cancel_restart_all":
-        await show_admin_dash(c, msg, True)
-        return
+if data == "cancel_restart_all":
+    await show_admin_dash(c, msg, True)
+    return
 
     # Backup
     if data == "a_backup":
