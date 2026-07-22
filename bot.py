@@ -355,6 +355,9 @@ class DeliveryEngine:
 
         db_name = await repo.get_db_name_for_clone(clone)
         batch = await repo.get_batch_by_id(batch_id, clone, db_name)
+        if not batch:
+            # Fallback to main DB
+            batch = await repo.get_batch_by_id(batch_id, "main", "main")
         if not batch: return
 
         files = batch.get("files", []); total = len(files); sent = 0; failed = 0
@@ -369,7 +372,9 @@ class DeliveryEngine:
                 await asyncio.sleep(e.value + 1)
                 await client.copy_message(chat_id, config.DB_CHANNEL_ID, fm["db_msg_id"], caption=fm.get("caption", ""), protect_content=protect)
                 sent += 1
-            except: failed += 1
+            except Exception as e:
+                log.error(f"Error copying message: {e}")
+                failed += 1
             await asyncio.sleep(config.BATCH_SEND_DELAY)
 
         try:
@@ -423,7 +428,7 @@ class CloneManager:
     def _register_handlers(self, client: Client, clone_id: str):
         async def _db(): return await repo.get_db_name_for_clone(clone_id)
 
-        # /start command
+        # /start command (FIXED)
         async def start_c(c: Client, m: Message):
             db_name = await _db(); user = m.from_user
             if not user: return
@@ -441,19 +446,29 @@ class CloneManager:
                     await m.reply(msg, reply_markup=kb.sub_link(link)); return
 
             args = m.text.split(maxsplit=1)
-            param = args[1] if len(args) > 1 else ""
+            param = args[1].strip() if len(args) > 1 else ""
 
+            # Single File Fetch
             if param.startswith("f_"):
-                fid = param[2:]
+                fid = param
                 fd = await repo.get_file_by_id(fid, clone_id, db_name)
-                if not fd: await m.reply("❌ File नहीं मिली।"); return
+                if not fd:
+                    fd = await repo.get_file_by_id(fid, "main", "main")
+                if not fd: 
+                    await m.reply("❌ File नहीं मिली।"); return
                 await c.copy_message(m.chat.id, config.DB_CHANNEL_ID, fd["db_msg_id"], caption=fd.get("caption",""), protect_content=settings.get("protect", True))
                 return
 
+            # Batch Collection Fetch (FIXED Prefix Issue)
             if param.startswith("b_"):
-                bid = param[2:]
+                bid = param
                 batch = await repo.get_batch_by_id(bid, clone_id, db_name)
-                if not batch: await m.reply("❌ Batch नहीं मिला।"); return
+                if not batch:
+                    # Search in main DB fallback
+                    batch = await repo.get_batch_by_id(bid, "main", "main")
+                if not batch: 
+                    await m.reply("❌ Batch नहीं मिला।"); return
+                
                 info = await m.reply(f"📦 **Batch Delivery Started!**\nFiles: {batch['total_files']} | Size: {fmt_size(batch['total_size'])}")
                 delivery_engine.enqueue(clone_id, user.id, m.chat.id, bid, info.id, settings.get("protect", True))
                 return
@@ -493,7 +508,7 @@ class CloneManager:
             cd = await repo.get_clone(clone_id)
             if cd: bot_uname = cd.get("bot_username", bot_uname)
 
-            link = f"https://t.me/{bot_uname}?start=b_{token}"
+            link = f"https://t.me/{bot_uname}?start={batch_id}"
             short = await shorten_url_api(link)
             if short: link = short
 
@@ -742,4 +757,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("Engine Stopped.")
-            
+    
+    
