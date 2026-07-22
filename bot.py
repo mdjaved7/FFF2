@@ -1506,61 +1506,58 @@ async def admin_callback_handler(c: Client, q: CallbackQuery, clone_id: str):
 
     
     # Settings
-if data == "a_settings":
-    await msg.edit_text(
-        "⚙️ **Global Settings**\n\nConfigure via .env:\n"
-        "`FORCE_SUB_CHANNELS`, `BACKUP_CHANNELS`\n"
-        "`PROTECT_CONTENT`, `AUTO_DELETE_SECONDS`\n"
-        "`RATE_LIMIT_*`, `SHORTENER_*`\n\n"
-        "Clone-specific: `/set_start`, `/add_fsub`, etc.",
-        reply_markup=kb.back()
-    )
-    return
+    if data == "a_settings":
+        await msg.edit_text(
+            "⚙️ **Global Settings**\n\nConfigure via .env:\n"
+            "`FORCE_SUB_CHANNELS`, `BACKUP_CHANNELS`\n"
+            "`PROTECT_CONTENT`, `AUTO_DELETE_SECONDS`\n"
+            "`RATE_LIMIT_*`, `SHORTENER_*`\n\n"
+            "Clone-specific: `/set_start`, `/add_fsub`, etc.",
+            reply_markup=kb.back()
+        )
+        return
 
-if data == "conf_restart_all":
-    await msg.edit_text("🔄 Restarting...")
+    if data == "conf_restart_all":
+        await msg.edit_text("🔄 Restarting...")
 
-    try:
-        await clone_mgr.shutdown_all()
-        await database.close()
-    except Exception as e:
-        log.error(f"Shutdown error: {e}")
+        try:
+            await clone_mgr.shutdown_all()
+            await database.close()
+        except Exception as e:
+            log.error(f"Shutdown error: {e}")
 
-    await asyncio.sleep(2)
+        await asyncio.sleep(2)
 
-    os._exit(0)
-    return
+        os._exit(0)
+        return
 
-if data == "cancel_restart_all":
-    await show_admin_dash(c, msg, True)
-    return
+    if data == "cancel_restart_all":
+        await show_admin_dash(c, msg, True)
+        return
 
+    # Backup
+    if data == "a_backup":
+        await msg.edit_text(
+            "💾 **Backup**\n\n"
+            "`/backup` to export file records to JSON.\n"
+            "Sent to log channel if configured.\n\n"
+            "GDrive: " + ("✅ configured" if config.GDRIVE_FOLDER_ID else "❌ not set"),
+            reply_markup=kb.back()
+        )
+        return
 
-# Backup
-if data == "a_backup":
-    await msg.edit_text(
-        "💾 **Backup**\n\n"
-        "`/backup` to export file records to JSON.\n"
-        "Sent to log channel if configured.\n\n"
-        "GDrive: " + ("✅ configured" if config.GDRIVE_FOLDER_ID else "❌ not set"),
-        reply_markup=kb.back()
-    )
-    return
+    # Cancel delivery
+    if data.startswith("cancel_dl:"):
+        parts = data.split(":")
+        bid = parts[1]
+        cl = parts[2] if len(parts) > 2 else clone_id
 
+        delivery_engine.cancel(cl, uid, bid)
 
-# Cancel delivery
-if data.startswith("cancel_dl:"):
-    parts = data.split(":")
-    bid = parts[1]
-    cl = parts[2] if len(parts) > 2 else clone_id
+        await q.answer("⏹ Delivery cancelled", show_alert=True)
+        return
 
-    delivery_engine.cancel(cl, uid, bid)
-
-    await q.answer("⏹ Delivery cancelled", show_alert=True)
-    return
-
-
-await q.answer("Unknown action")
+    await q.answer("Unknown action")
 
 async def show_admin_dash(c: Client, msg: Message, edit: bool = False):
     global _start_time
