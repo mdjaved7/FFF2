@@ -778,33 +778,7 @@ class KB:
         return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_dl:{bid}:{clone}")]])
 
 kb = KB()
-# ═══════════════════════════════════════════════════════════════════════════════
-# CALLBACK QUERY HANDLER (Back Buttons & Menus)
-# ═══════════════════════════════════════════════════════════════════════════════
 
-@bot.on_callback_query()
-async def callback_handler(client: Client, query: CallbackQuery):
-    data = query.data
-    try:
-        if data == "admin_dashboard":
-            await query.message.edit_text(
-                "⚙️ **Admin Dashboard**\n\nSelect an option below:",
-                reply_markup=kb.admin()
-            )
-        elif data == "help":
-            await query.message.edit_text(
-                "❓ **Help Section**\n\nSend me files or links to store them.",
-                reply_markup=kb.main()
-            )
-        elif data == "close":
-            await query.message.delete()
-            
-        await query.answer()
-    except Exception as e:
-        log.error(f"Callback error ({data}): {e}")
-        await query.answer("An error occurred!", show_alert=True)
-
-        
 # ═══════════════════════════════════════════════════════════════════════════════
 # 10. AUTO-DELETE SCHEDULER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -850,6 +824,32 @@ class AutoDeleteScheduler:
 
 auto_del_sched = AutoDeleteScheduler()
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CALLBACK QUERY HANDLER (Back Buttons & Menus)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.on_callback_query()
+async def callback_handler(client: Client, query: CallbackQuery):
+    data = query.data
+    try:
+        if data == "admin_dashboard":
+            await query.message.edit_text(
+                "⚙️ **Admin Dashboard**\n\nSelect an option below:",
+                reply_markup=kb.admin()
+            )
+        elif data == "help":
+            await query.message.edit_text(
+                "❓ **Help Section**\n\nSend me files or links to store them.",
+                reply_markup=kb.main()
+            )
+        elif data == "close":
+            await query.message.delete()
+            
+        await query.answer()
+    except Exception as e:
+        log.error(f"Callback error ({data}): {e}")
+        await query.answer("An error occurred!", show_alert=True)
+        
 # ═══════════════════════════════════════════════════════════════════════════════
 # 11. BATCH DELIVERY ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
