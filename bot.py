@@ -545,26 +545,36 @@ async def main():
     _start_time = time.time()
 
     log.info("Starting File Store System...")
-    Config.validate()
-    await database.connect("main")
-    await repo.ensure_indexes("main")
-
-    mc = await clone_mgr.init_main()
-    clone_mgr._register_handlers(mc, "main")
-
-    await mc.start()
-    log.info(f"✅ Main Bot Active: @{config.BOT_USERNAME}")
-
-    # Delivery worker aur Auto Delete Worker ko start karein
-    await delivery_engine.start(config.DELIVERY_WORKERS)
-    asyncio.create_task(auto_delete_messages_worker())
-
-    log.info("🚀 System Fully Active & Processing Link Requests!")
-    await idle()
-
-if __name__ == "__main__":
+    
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        log.info("Engine Stopped.")
+        Config.validate()
+        log.info("Connecting to MongoDB...")
+        await database.connect("main")
+
+        # Indexes ko background me run karein taaki startup block NA ho
+        asyncio.create_task(repo.ensure_indexes("main"))
+
+        log.info("Initializing Main Pyrogram Client...")
+        mc = await clone_mgr.init_main()
+        clone_mgr._register_handlers(mc, "main")
+
+        log.info("Starting Pyrogram Main Client...")
+        await mc.start()
+        log.info(f"✅ Main Bot Active: @{config.BOT_USERNAME}")
+
+        log.info("Loading Clones...")
+        asyncio.create_task(clone_mgr.load_all_clones())
+
+        log.info("Starting Delivery Engine Workers...")
+        await delivery_engine.start(config.DELIVERY_WORKERS)
+        
+        log.info("Starting Auto-Delete Background Task...")
+        asyncio.create_task(auto_delete_messages_worker())
+
+        log.info("🚀 System Fully Active & Processing Link Requests!")
+        await idle()
+
+    except Exception as e:
+        log.critical(f"❌ FATAL ERROR DURING STARTUP: {e}", exc_info=True)
+
             
