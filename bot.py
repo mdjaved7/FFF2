@@ -782,7 +782,7 @@ kb = KB()
 # CALLBACK QUERY HANDLER (Back Buttons & Menus)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.on_callback_query()
+@bot.on_callback_query()
 async def callback_handler(client: Client, query: CallbackQuery):
     data = query.data
     try:
@@ -794,16 +794,16 @@ async def callback_handler(client: Client, query: CallbackQuery):
         elif data == "help":
             await query.message.edit_text(
                 "❓ **Help Section**\n\nSend me files or links to store them.",
-                reply_markup=kb.main() # या जो भी आपका मैन मेनू कीबोर्ड हो
+                reply_markup=kb.main()
             )
         elif data == "close":
             await query.message.delete()
             
-        # लोडिंग एनीमेशन को हटाने के लिए
         await query.answer()
     except Exception as e:
         log.error(f"Callback error ({data}): {e}")
         await query.answer("An error occurred!", show_alert=True)
+
         
 # ═══════════════════════════════════════════════════════════════════════════════
 # 10. AUTO-DELETE SCHEDULER
