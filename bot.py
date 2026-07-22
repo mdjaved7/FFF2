@@ -1613,7 +1613,8 @@ async def backup_command(c: Client, m: Message):
 # CALLBACK QUERY HANDLER (Back Buttons & Menus)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@bot.on_callback_query()
+
+    @staticmethod
 async def callback_handler(client: Client, query: CallbackQuery):
     data = query.data
     try:
