@@ -628,12 +628,13 @@ class Database:
         r = await self.clones.delete_one({"clone_id": clone_id})
         return r.deleted_count > 0
 
-        async def update_setting(self, key: str, value: Any):
+    async def update_setting(self, key: str, value: Any):
         await self.settings.update_one(
             {"key": key},
             {"$set": {"key": key, "value": value, "updated_at": datetime.now(timezone.utc)}},
             upsert=True
         )
+
 
 # Database instance initialization strictly AFTER all class methods are defined
 db = Database()
