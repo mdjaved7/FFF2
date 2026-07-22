@@ -402,9 +402,10 @@ class Database:
     async def get_total_files(self) -> int:
         return await self.files.count_documents({"deleted": False})
 
-    # --- AUTO-DELETE QUEUE ---
+        # --- AUTO-DELETE QUEUE ---
     async def add_pending_deletion(self, chat_id: int, message_id: int, delay_seconds: int):
-        if delay_seconds <= 0: return
+        if delay_seconds <= 0:
+            return
         delete_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
         await self.pending_del.insert_one({
             "chat_id": chat_id,
@@ -412,21 +413,34 @@ class Database:
             "delete_at": delete_at
         })
 
-    async def get_expired_deletions(self) -> List[Dict[str, Any]]:
-        now = datetime.now(timezone.utc)
-        cursor = self.pending_del.find({"delete_at": {"$lte": now}})
-        return await cursor.to_list(length=200)
-
     async def remove_pending_deletion(self, doc_id):
         await self.pending_del.delete_one({"_id": doc_id})
 
+    # --- THUMBNAIL FUNCTIONS ---
+    async def set_thumbnail(self, user_id: int, file_id: str):
+        pass
+
+    async def get_thumbnail(self, user_id: int) -> Optional[str]:
+        pass
+
+    # --- SETTINGS FUNCTIONS ---
+    async def update_setting(self, key: str, value: Any):
+        await self.settings.update_one(
+            {"key": key},
+            {"$set": {"key": key, "value": value, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True
+        )
+
+# Database instance initialization strictly AFTER all class methods are defined
 db = Database()
+
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 5. DATABASE ENGINE (CONTINUATION: ADVANCED MODULES & SETTINGS)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# --- CUSTOM THUMBNAIL MANAGERS ---
+  # --- CUSTOM THUMBNAIL MANAGERS ---
     async def set_thumbnail(self, user_id: int, file_id: str):
         await self.thumbnails.update_one(
             {"user_id": user_id},
