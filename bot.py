@@ -310,6 +310,153 @@ class Database:
         
         log.info("MongoDB Async Client Connected. All Collections & Indexes Initialized.")
 
+        # --- FILE MANAGERS ---
+    async def add_file(self, data: Dict[str, Any]) -> str:
+        code = generate_token(8)
+        doc = {
+            "file_id": data["file_id"],
+            "file_unique_id": data["file_unique_id"],
+            "file_code": code,
+            "file_name": data.get("file_name", "Unknown"),
+            "file_size": data.get("file_size", 0),
+            "file_type": data.get("file_type", "document"),
+            "mime_type": data.get("mime_type", ""),
+            "caption": data.get("caption", ""),
+            "db_msg_id": data.get("db_msg_id", 0),
+            "uploader_id": data.get("uploader_id", config.OWNER_ID),
+            "created_at": datetime.now(timezone.utc),
+            "views": 0,
+            "downloads": 0,
+            "deleted": False
+        }
+        await self.files.insert_one(doc)
+        return code
+
+    async def get_file(self, code: str) -> Optional[Dict[str, Any]]:
+        return await self.files.find_one({"file_code": code, "deleted": False})
+
+    async def soft_delete_file(self, code: str) -> bool:
+        # NO DATA LOSS - Safe Flagging
+        res = await self.files.update_one({"file_code": code}, {"$set": {"deleted": True}})
+        return res.modified_count > 0
+
+    async def search_files(self, query: str, limit: int = 10, page: int = 1) -> Tuple[List[Dict[str, Any]], int]:
+        skip = (page - 1) * limit
+        filter_q = {"$text": {"$search": query}, "deleted": False}
+        total = await self.files.count_documents(filter_q)
+        cursor = self.files.find(filter_q).skip(skip).limit(limit)
+        items = await cursor.to_list(length=limit)
+        return items, total
+
+    # --- BATCH MANAGERS ---
+    async def create_batch(self, file_codes: List[str], creator_id: int) -> str:
+        batch_id = f"b_{generate_token(10)}"
+        doc = {
+            "batch_id": batch_id,
+            "file_codes": file_codes,
+            "creator_id": creator_id,
+            "created_at": datetime.now(timezone.utc),
+            "total_files": len(file_codes),
+            "views": 0
+        }
+        await self.batches.insert_one(doc)
+        return batch_id
+
+    async def get_batch(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        return await self.batches.find_one({"batch_id": batch_id})
+
+    # --- USER MANAGERS ---
+    async def add_user(self, user_id: int, username: str = "", first_name: str = ""):
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "last_seen": datetime.now(timezone.utc),
+                "banned": False
+            }, "$setOnInsert": {"joined_at": datetime.now(timezone.utc)}},
+            upsert=True
+        )
+
+    async def is_banned(self, user_id: int) -> bool:
+        u = await self.users.find_one({"user_id": user_id})
+        return u.get("banned", False) if u else False
+
+    async def ban_user(self, user_id: int) -> bool:
+        r = await self.users.update_one({"user_id": user_id}, {"$set": {"banned": True}})
+        return r.modified_count > 0
+
+    async def unban_user(self, user_id: int) -> bool:
+        r = await self.users.update_one({"user_id": user_id}, {"$set": {"banned": False}})
+        return r.modified_count > 0
+
+    async def get_all_user_ids(self) -> List[int]:
+        cursor = self.users.find({"banned": False}, {"user_id": 1})
+        docs = await cursor.to_list(length=None)
+        return [d["user_id"] for d in docs]
+
+    async def get_total_users(self) -> int:
+        return await self.users.count_documents({})
+
+    async def get_total_files(self) -> int:
+        return await self.files.count_documents({"deleted": False})
+
+    # --- AUTO-DELETE QUEUE ---
+    async def add_pending_deletion(self, chat_id: int, message_id: int, delay_seconds: int):
+        if delay_seconds <= 0:
+            return
+        delete_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+        await self.pending_del.insert_one({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "delete_at": delete_at
+        })
+
+    async def get_expired_deletions(self) -> List[Dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        cursor = self.pending_del.find({"delete_at": {"$lte": now}})
+        return await cursor.to_list(length=200)
+
+    async def remove_pending_deletion(self, doc_id):
+        await self.pending_del.delete_one({"_id": doc_id})
+
+    # --- CUSTOM THUMBNAIL MANAGERS ---
+    async def set_thumbnail(self, user_id: int, file_id: str):
+        await self.thumbnails.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "file_id": file_id, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True
+        )
+
+    async def get_thumbnail(self, user_id: int) -> Optional[str]:
+        doc = await self.thumbnails.find_one({"user_id": user_id})
+        return doc.get("file_id") if doc else None
+
+    async def delete_thumbnail(self, user_id: int) -> bool:
+        r = await self.thumbnails.delete_one({"user_id": user_id})
+        return r.deleted_count > 0
+
+    # --- CUSTOM CAPTION MANAGERS ---
+    async def set_caption(self, user_id: int, caption_text: str):
+        await self.captions.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "caption": caption_text, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True
+        )
+
+    async def get_caption(self, user_id: int) -> Optional[str]:
+        doc = await self.captions.find_one({"user_id": user_id})
+        return doc.get("caption") if doc else None
+
+    async def delete_caption(self, user_id: int) -> bool:
+        r = await self.captions.delete_one({"user_id": user_id})
+        return r.deleted_count > 0
+
+    # --- MULTI-CLONE ENGINE DB MANAGERS ---
+    async def add_clone(self, clone_id: str, bot_token: str, owner_id: int, bot_username: str):
+        doc = {
+            "clone_id": clone_id,
     # --- FILE MANAGERS ---
     async def add_file(self, data: Dict[str, Any]) -> str:
         code = generate_token(8)
@@ -402,7 +549,7 @@ class Database:
     async def get_total_files(self) -> int:
         return await self.files.count_documents({"deleted": False})
 
-            # --- AUTO-DELETE QUEUE ---
+    # --- AUTO-DELETE QUEUE ---
     async def add_pending_deletion(self, chat_id: int, message_id: int, delay_seconds: int):
         if delay_seconds <= 0:
             return
@@ -473,29 +620,18 @@ class Database:
         r = await self.clones.delete_one({"clone_id": clone_id})
         return r.deleted_count > 0
 
-    # --- SYSTEM SETTINGS DYNAMIC GUI DB ---
-    async def get_setting(self, key: str, default: Any = None) -> Any:
-        doc = await self.settings.find_one({"key": key})
-        return doc["value"] if doc else default
-
-    async def update_setting(self, key: str, value: Any):
+        async def update_setting(self, key: str, value: Any):
         await self.settings.update_one(
             {"key": key},
             {"$set": {"key": key, "value": value, "updated_at": datetime.now(timezone.utc)}},
             upsert=True
         )
 
-# CLASS KHATAM HONE KE BAAD (SABSE AAKHIR MEIN INITIALIZE KAREIN)
+# Database instance initialization strictly AFTER all class methods are defined
 db = Database()
 
 
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5. DATABASE ENGINE (CONTINUATION: ADVANCED MODULES & SETTINGS)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-  # --- CUSTOM THUMBNAIL MANAGERS ---
+      # --- CUSTOM THUMBNAIL MANAGERS ---
     async def set_thumbnail(self, user_id: int, file_id: str):
         await self.thumbnails.update_one(
             {"user_id": user_id},
@@ -506,26 +642,6 @@ db = Database()
     async def get_thumbnail(self, user_id: int) -> Optional[str]:
         doc = await self.thumbnails.find_one({"user_id": user_id})
         return doc.get("file_id") if doc else None
-
-    async def delete_thumbnail(self, user_id: int) -> bool:
-        r = await self.thumbnails.delete_one({"user_id": user_id})
-        return r.deleted_count > 0
-
-    # --- CUSTOM CAPTION MANAGERS ---
-    async def set_caption(self, user_id: int, caption_text: str):
-        await self.captions.update_one(
-            {"user_id": user_id},
-            {"$set": {"user_id": user_id, "caption": caption_text, "updated_at": datetime.now(timezone.utc)}},
-            upsert=True
-        )
-
-    async def get_caption(self, user_id: int) -> Optional[str]:
-        doc = await self.captions.find_one({"user_id": user_id})
-        return doc.get("caption") if doc else None
-
-    async def delete_caption(self, user_id: int) -> bool:
-        r = await self.captions.delete_one({"user_id": user_id})
-        return r.deleted_count > 0
 
     # --- MULTI-CLONE ENGINE DB MANAGERS ---
     async def add_clone(self, clone_id: str, bot_token: str, owner_id: int, bot_username: str):
@@ -548,16 +664,15 @@ db = Database()
         return r.deleted_count > 0
 
     # --- SYSTEM SETTINGS DYNAMIC GUI DB ---
-    async def get_setting(self, key: str, default: Any = None) -> Any:
-        doc = await self.settings.find_one({"key": key})
-        return doc["value"] if doc else default
-
     async def update_setting(self, key: str, value: Any):
         await self.settings.update_one(
             {"key": key},
             {"$set": {"key": key, "value": value, "updated_at": datetime.now(timezone.utc)}},
             upsert=True
         )
+
+# Database instance initialization strictly AFTER all class methods are defined
+db = Database()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 6. RATE LIMITER & SPAM PROTECTION MIDDLEWARE
