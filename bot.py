@@ -871,14 +871,10 @@ async def cancel_broadcast(cl, msg):
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def restart_bot():
-
-await stop_all_clones()
-
-if db:
-
-await db.close()
-
-os.execl(sys.executable, sys.executable, *sys.argv)
+    await stop_all_clones()
+    if db:
+        await db.close()
+    os.execl(sys.executable, sys.executable, *sys.argv)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # STARTUP / SHUTDOWN
