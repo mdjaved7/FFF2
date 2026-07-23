@@ -331,7 +331,7 @@ async def process_batch_queue(user_id, context, message):
                         "file_size": file_size,
                         "file_type": 'document' if msg.document else ('video' if msg.video else ('photo' if msg.photo else 'audio'))
                     })
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(0.2)
                     break
                 except Exception as e:
                     error_str = str(e)
