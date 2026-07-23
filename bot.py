@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.request import HTTPXRequest
 from telegram.ext import (
-    ApplicationBuilder, 
+    Application,
     MessageHandler, 
     CommandHandler, 
     CallbackQueryHandler, 
@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 from pymongo import MongoClient
 
-# 🔑 Credentials ab sirf Railway Environment Variables se aayenge (GitHub par bilkul public nahi honge)
+# 🔑 Credentials ab sirf Railway Environment Variables se aayenge
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "") 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))        
@@ -345,7 +345,7 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
 if __name__ == "__main__":
     req = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).post_init(run_post_init).build()
-
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("logs", check_logs))
@@ -353,10 +353,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CallbackQueryHandler(cancel_callback, pattern="cancel_action"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.ALL & ~filters.COMMAND, store_file))
-
+    
     app.add_error_handler(global_error_handler)
-
+    
     print("🤖 Bot is running on Railway!")
     app.run_polling(drop_pending_updates=True)
-
-  
+    
