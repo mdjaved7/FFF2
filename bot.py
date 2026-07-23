@@ -325,13 +325,12 @@ async def process_batch_queue(user_id, context, message):
                         "file_size": file_size,
                         "file_type": 'document' if msg.document else ('video' if msg.video else ('photo' if msg.photo else 'audio'))
                     })
-                    # 🛡️ Flood control से बचने के लिए डिले को 1 सेकंड कर दिया गया है
+                    # 🛡️ Flood control से बचने के लिए डिले 1 सेकंड
                     await asyncio.sleep(1.0)
                     break
                 except Exception as e:
                     error_str = str(e)
                     if "FloodWait" in error_str:
-                        # अगर टेलीग्राम ने रुकने को कहा है, तो उतने सेकंड इंतज़ार करके दोबारा ट्राई करेगा
                         import re
                         seconds = int(re.search(r'\d+', error_str).group()) if re.search(r'\d+', error_str) else 5
                         print(f"⚠️ FloodWait detected! Sleeping for {seconds} seconds...")
@@ -343,11 +342,12 @@ async def process_batch_queue(user_id, context, message):
     backup_queues[user_id] = saved_files
     await message.reply_text("✅ Batch stored! Ab aap /getlink command use kar sakte hain.")
 
-    
-    if update.message.from_user.id not in user_queues:
-        user_queues[update.message.from_user.id] = []
-        asyncio.create_task(process_batch_queue(update.message.from_user.id, context, update.message))
-    user_queues[update.message.from_user.id].append(update.message)
+async def store_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in user_queues:
+        user_queues[user_id] = []
+        asyncio.create_task(process_batch_queue(user_id, context, update.message))
+    user_queues[user_id].append(update.message)
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error_msg = str(context.error)
@@ -379,4 +379,5 @@ if __name__ == "__main__":
     
     print("🤖 Bot is running on Railway!")
     app.run_polling(drop_pending_updates=True)
+
     
