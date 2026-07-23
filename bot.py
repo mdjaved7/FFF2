@@ -18,7 +18,10 @@ from pymongo import MongoClient
 # 🔑 Credentials ab sirf Railway Environment Variables se aayenge
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "") 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))        
+# Multiple Admin IDs Setup
+ADMIN_IDS_RAW = os.getenv("ADMIN_ID", "0")
+ADMIN_IDS = [int(aid.strip()) for aid in ADMIN_IDS_RAW.split(",") if aid.strip().isdigit()]
+ADMIN_ID = ADMIN_IDS[0] if ADMIN_IDS else 0
 FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "")             
 CHANNEL_INVITE_LINK = os.getenv("CHANNEL_INVITE_LINK", "") 
 PRIVATE_STORE_ID = int(os.getenv("PRIVATE_STORE_ID", "0"))  
