@@ -303,32 +303,43 @@ async def get_link_manually(update, context):
         await update.message.reply_text(f"❌ Link generation error: {e}")
 
 async def process_batch_queue(user_id, context, message):
-    await asyncio.sleep(20)
+    await asyncio.sleep(30)
     if user_id not in user_queues: return
     raw_files = user_queues.pop(user_id)
     saved_files = []
+    
     for msg in raw_files:
         file_obj = msg.document or msg.video or (msg.photo[-1] if msg.photo else None) or msg.audio
         file_id = file_obj.file_id if file_obj else None
         file_size = file_obj.file_size if file_obj and hasattr(file_obj, 'file_size') else 0
         
         if file_id:
-            try:
-                await context.bot.forward_message(PRIVATE_STORE_ID, msg.chat_id, msg.message_id)
-                saved_files.append({
-                    "file_id": file_id, 
-                    "file_size": file_size,
-                    "file_type": 'document' if msg.document else ('video' if msg.video else ('photo' if msg.photo else 'audio'))
-                })
-                await asyncio.sleep(0.1)
-            except Exception as e:
-                print(f"Forward error: {e}")
+            while True:  # FloodWait आने पर ऑटो-रीटाय करने के लिए लूप
+                try:
+                    await context.bot.forward_message(PRIVATE_STORE_ID, msg.chat_id, msg.message_id)
+                    saved_files.append({
+                        "file_id": file_id, 
+                        "file_size": file_size,
+                        "file_type": 'document' if msg.document else ('video' if msg.video else ('photo' if msg.photo else 'audio'))
+                    })
+                    # 🛡️ Flood control से बचने के लिए डिले को 1 सेकंड कर दिया गया है
+                    await asyncio.sleep(1.0)
+                    break
+                except Exception as e:
+                    error_str = str(e)
+                    if "FloodWait" in error_str:
+                        # अगर टेलीग्राम ने रुकने को कहा है, तो उतने सेकंड इंतज़ार करके दोबारा ट्राई करेगा
+                        import re
+                        seconds = int(re.search(r'\d+', error_str).group()) if re.search(r'\d+', error_str) else 5
+                        print(f"⚠️ FloodWait detected! Sleeping for {seconds} seconds...")
+                        await asyncio.sleep(seconds + 1)
+                    else:
+                        print(f"Forward error: {e}")
+                        break
+
     backup_queues[user_id] = saved_files
     await message.reply_text("✅ Batch stored! Ab aap /getlink command use kar sakte hain.")
 
-async def store_file(update, context):
-    if not update.message or not update.message.from_user or update.message.from_user.id != ADMIN_ID: return
-    if not (update.message.document or update.message.video or update.message.photo or update.message.audio): return
     
     if update.message.from_user.id not in user_queues:
         user_queues[update.message.from_user.id] = []
