@@ -63,10 +63,9 @@ ADMIN_IDS: List[int] = [
     for x in os.environ.get("ADMIN_IDS", "").split(",")
     if x.strip()
 ]
+AUTO_DELETE_SECS: int = 28800
 
-AUTO_DELETE_SECS: int = 28800  # 8 hours
-
-# Validation
+# ---- Validation ----
 _MISSING = []
 if not API_ID or API_ID == 0:
     _MISSING.append("API_ID")
@@ -81,7 +80,6 @@ if _MISSING:
         "❌ Missing environment variables: "
         + ", ".join(_MISSING)
     )
-
 # ---------------------------------------------------------------------------
 #  LOGGING
 # ---------------------------------------------------------------------------
