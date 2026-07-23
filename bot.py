@@ -871,17 +871,24 @@ async def cancel_broadcast(cl, msg):
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def restart_bot():
-    await stop_all_clones()
-    if db:
-        await db.close()
-    os.execl(sys.executable, sys.executable, *sys.argv)
+
+await stop_all_clones()
+
+if db:
+
+await db.close()
+
+os.execl(sys.executable, sys.executable, *sys.argv)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # STARTUP / SHUTDOWN
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.on_start()
-async def on_start(cl):
+# ═══════════════════════════════════════════════════════════════════════════
+# STARTUP LOGIC (no decorators — called directly in main)
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def startup():
     global db
     db = Database(MONGODB_URI)
     await db.connect()
@@ -890,20 +897,23 @@ async def on_start(cl):
             await start_one_clone(c)
         except Exception as e:
             LOGGER.error("Clone start failed: %s", e)
-    await cl.set_bot_commands([
+    await app.set_bot_commands([
         BotCommand("start", "Start the bot"),
         BotCommand("add_clone", "Add clone (Admin)"),
         BotCommand("add_fsub", "Add FSUB channel (Admin)"),
         BotCommand("del_fsub", "Remove FSUB channel (Admin)"),
         BotCommand("cancel", "Cancel broadcast (Admin)"),
     ])
-    LOGGER.info("✅ Bot @%s started", (await cl.get_me()).username)
+    me = await app.get_me()
+    LOGGER.info("✅ Bot @%s started", me.username)
 
-@app.on_stop()
-async def on_stop(**kw):
+
+async def shutdown():
     await stop_all_clones()
     if db:
         await db.close()
+    LOGGER.info("Bot stopped cleanly.")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # RUN
@@ -911,4 +921,22 @@ async def on_stop(**kw):
 
 if __name__ == "__main__":
     LOGGER.info("Launching File Store Bot…")
-    app.run()
+
+    async def main():
+        await app.start()
+        await startup()
+        LOGGER.info("Bot is running. Press Ctrl+C to stop.")
+        
+        # Keep running until interrupted
+        try:
+            await asyncio.Event().wait()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            await shutdown()
+            await app.stop()
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
