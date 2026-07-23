@@ -293,13 +293,17 @@ async def broadcast(update, context):
     await update.message.reply_text(f"✅ Broadcast Complete!\n🟢 Success: {success}\n🔴 Failed/Blocked: {failed}")
 
 async def get_link_manually(update, context):
-    if update.effective_user.id != ADMIN_ID: return
-    if ADMIN_ID not in backup_queues: 
+async def get_link_manually(update, context):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS: return
+    
+    if user_id not in backup_queues or not backup_queues[user_id]: 
         await update.message.reply_text("❌ Queue khali hai! Pehle files bhejein.")
         return
+        
     batch_key = f"batch_{int(time.time())}"
     try:
-        batch_col.insert_one({"batch_key": batch_key, "files": backup_queues[ADMIN_ID], "timestamp": time.time()})
+        batch_col.insert_one({"batch_key": batch_key, "files": backup_queues[user_id], "timestamp": time.time()})
         bot_info = await context.bot.get_me()
         await update.message.reply_text(f"🔗 Link: https://t.me/{bot_info.username}?start={batch_key}")
     except Exception as e:
@@ -317,7 +321,7 @@ async def process_batch_queue(user_id, context, message):
         file_size = file_obj.file_size if file_obj and hasattr(file_obj, 'file_size') else 0
         
         if file_id:
-            while True:  # FloodWait आने पर ऑटो-रीटाय करने के लिए लूप
+            while True:  
                 try:
                     await context.bot.forward_message(PRIVATE_STORE_ID, msg.chat_id, msg.message_id)
                     saved_files.append({
@@ -325,7 +329,6 @@ async def process_batch_queue(user_id, context, message):
                         "file_size": file_size,
                         "file_type": 'document' if msg.document else ('video' if msg.video else ('photo' if msg.photo else 'audio'))
                     })
-                    # 🛡️ Flood control से बचने के लिए डिले 1 सेकंड
                     await asyncio.sleep(1.0)
                     break
                 except Exception as e:
@@ -333,15 +336,12 @@ async def process_batch_queue(user_id, context, message):
                     if "FloodWait" in error_str:
                         import re
                         seconds = int(re.search(r'\d+', error_str).group()) if re.search(r'\d+', error_str) else 5
-                        print(f"⚠️ FloodWait detected! Sleeping for {seconds} seconds...")
                         await asyncio.sleep(seconds + 1)
                     else:
-                        print(f"Forward error: {e}")
                         break
 
     backup_queues[user_id] = saved_files
     await message.reply_text("✅ Batch stored! Ab aap /getlink command use kar sakte hain.")
-
 async def store_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_queues:
