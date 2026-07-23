@@ -303,7 +303,7 @@ async def get_link_manually(update, context):
         await update.message.reply_text(f"❌ Link generation error: {e}")
 
 async def process_batch_queue(user_id, context, message):
-    await asyncio.sleep(60)
+    await asyncio.sleep(20)
     if user_id not in user_queues: return
     raw_files = user_queues.pop(user_id)
     saved_files = []
@@ -320,7 +320,7 @@ async def process_batch_queue(user_id, context, message):
                     "file_size": file_size,
                     "file_type": 'document' if msg.document else ('video' if msg.video else ('photo' if msg.photo else 'audio'))
                 })
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
             except Exception as e:
                 print(f"Forward error: {e}")
     backup_queues[user_id] = saved_files
