@@ -18,10 +18,12 @@ from pymongo import MongoClient
 # 🔑 Credentials ab sirf Railway Environment Variables se aayenge
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "") 
+
 # Multiple Admin IDs Setup
 ADMIN_IDS_RAW = os.getenv("ADMIN_ID", "0")
 ADMIN_IDS = [int(aid.strip()) for aid in ADMIN_IDS_RAW.split(",") if aid.strip().isdigit()]
 ADMIN_ID = ADMIN_IDS[0] if ADMIN_IDS else 0
+
 FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "")             
 CHANNEL_INVITE_LINK = os.getenv("CHANNEL_INVITE_LINK", "") 
 PRIVATE_STORE_ID = int(os.getenv("PRIVATE_STORE_ID", "0"))  
@@ -64,7 +66,8 @@ async def database_storage_checker(app):
                     f"कृपया कुछ पुराना डेटा डिलीट करें, अन्यथा बॉट नया डेटा सेव करना बंद कर देगा।"
                 )
                 try:
-                    await app.bot.send_message(chat_id=ADMIN_ID, text=alert_text, parse_mode="HTML")
+                    for adm in ADMIN_IDS:
+                        await app.bot.send_message(chat_id=adm, text=alert_text, parse_mode="HTML")
                 except Exception as sms_err:
                     print(f"Alert sending failed: {sms_err}")
                     
@@ -232,7 +235,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Hello! I am a permanent batch file store bot.")
 
 async def check_logs(update, context):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id not in ADMIN_IDS: return
     try:
         logs = list(history_col.find().sort("_id", -1).limit(15))
         log_text = "📊 Recent Logs:\n\n" + "".join([f"👤 {e.get('first_name')}\n📥 {e.get('batch_key')}\n⏰ {e.get('time')}\n\n" for e in logs])
@@ -241,7 +244,7 @@ async def check_logs(update, context):
         await update.message.reply_text(f"❌ Logs load karne me error: {e}")
 
 async def stats(update, context):
-    if update.effective_user.id == ADMIN_ID: 
+    if update.effective_user.id in ADMIN_IDS: 
         try:
             total_users = user_col.count_documents({})
             total_reqs = history_col.count_documents({})
@@ -269,7 +272,7 @@ async def stats(update, context):
             await update.message.reply_text(f"❌ Stats calculation error: {e}")
 
 async def broadcast(update, context):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id not in ADMIN_IDS: return
     if not context.args and not update.message.reply_to_message:
         await update.message.reply_text("❌ Kuch text likhein ya kisi message ko reply karein.")
         return
@@ -292,7 +295,6 @@ async def broadcast(update, context):
                 except: pass
     await update.message.reply_text(f"✅ Broadcast Complete!\n🟢 Success: {success}\n🔴 Failed/Blocked: {failed}")
 
-async def get_link_manually(update, context):
 async def get_link_manually(update, context):
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS: return
@@ -342,8 +344,11 @@ async def process_batch_queue(user_id, context, message):
 
     backup_queues[user_id] = saved_files
     await message.reply_text("✅ Batch stored! Ab aap /getlink command use kar sakte hain.")
+
 async def store_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS: return  # सिर्फ एडमिन की फाइलें सेव होंगी
+    
     if user_id not in user_queues:
         user_queues[user_id] = []
         asyncio.create_task(process_batch_queue(user_id, context, update.message))
@@ -379,5 +384,4 @@ if __name__ == "__main__":
     
     print("🤖 Bot is running on Railway!")
     app.run_polling(drop_pending_updates=True)
-
     
