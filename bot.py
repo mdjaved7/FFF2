@@ -21,7 +21,7 @@ import random
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
-from dotenv import load_dototenv
+from dotenv import load_dotenv
 load_dotenv()
 
 from pyrogram import Client, filters, enums
