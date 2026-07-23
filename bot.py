@@ -344,8 +344,8 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
 
 if __name__ == "__main__":
     req = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0)
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).request(req).post_init(run_post_init).build()
-    
+app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).post_init(run_post_init).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("logs", check_logs))
