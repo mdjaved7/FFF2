@@ -1,6 +1,7 @@
 import os
 import time
 import asyncio
+import aiohttp
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,6 +20,11 @@ from pymongo import MongoClient
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "") 
 
+# ShrinkBixby API & Tutorial Configuration
+SHRINK_API_TOKEN = "81f51fb11c1b277ee3dc2edc0b21fe5c5b95cd6a"
+TOKEN_VALIDITY_DURATION = 8 * 3600  # 8 Hours in seconds
+TUTORIAL_VIDEO_LINK = os.getenv("TUTORIAL_VIDEO_LINK", "https://t.me/your_tutorial_link")
+
 # Multiple Admin IDs Setup
 ADMIN_IDS_RAW = os.getenv("ADMIN_ID", "0")
 ADMIN_IDS = [int(aid.strip()) for aid in ADMIN_IDS_RAW.split(",") if aid.strip().isdigit()]
@@ -35,6 +41,7 @@ batch_col = db['file_batches']
 user_col = db['users']
 delete_col = db['delete_queue'] 
 history_col = db['user_history']  
+token_col = db['user_tokens'] 
 
 user_queues = {}
 backup_queues = {}
@@ -49,6 +56,34 @@ def get_readable_size(size_in_bytes):
             return f"{size_in_bytes:.2f} {unit}"
         size_in_bytes /= 1024.0
     return f"{size_in_bytes:.2f} PB"
+
+# --- ShrinkBixby Shortener Function ---
+async def get_short_link(long_url):
+    api_url = f"https://shrinkbixby.com/api?api={SHRINK_API_TOKEN}&url={long_url}"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(api_url) as response:
+                data = await response.json()
+                if data.get("status") == "success":
+                    return data.get("shortenedUrl")
+        except Exception as e:
+            print(f"ShrinkBixby API Error: {e}")
+    return long_url  
+
+# --- Token Check Logic ---
+def is_token_valid(user_id):
+    user_record = token_col.find_one({"user_id": user_id})
+    if not user_record or "expiry" not in user_record:
+        return False
+    return time.time() < user_record["expiry"]
+
+def renew_user_token(user_id):
+    expiry_time = time.time() + TOKEN_VALIDITY_DURATION
+    token_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"expiry": expiry_time}},
+        upsert=True
+    )
 
 # --- Storage Checker ---
 async def database_storage_checker(app):
@@ -86,6 +121,20 @@ async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: 
         pass
     await query.answer("❌ Files bhejna rok diya gaya hai.")
+
+# --- Token Check Callback Handler ---
+async def token_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if is_token_valid(user_id):
+        await query.answer("✅ Aapka Access Token active hai! Dubara /start command bhejein.", show_alert=True)
+        try:
+            await query.message.delete()
+        except:
+            pass
+    else:
+        await query.answer("❌ Token abhi verified nahi hai! Pehle 'Renew Access Token' par click karke token generate karein.", show_alert=True)
 
 # --- Auto-Delete Monitor ---
 async def auto_delete_monitor(app):
@@ -225,14 +274,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_col.insert_one({"user_id": user.id, "username": user.username, "first_name": user.first_name})
     except:
         pass
+        
     args = context.args
+    
+    if args and args[0].startswith("verify_"):
+        try:
+            token_user_id = int(args[0].split("_")[1])
+            if token_user_id == user.id:
+                renew_user_token(user.id)
+                await update.message.reply_text("✅ <b>Your Access Token has been successfully renewed for the next 8 hours!</b>\n\nAb aap apne file link par dubara click karke files le sakte hain.", parse_mode="HTML")
+                return
+        except Exception as e:
+            print(f"Token Verification Error: {e}")
+
     if args:
-        if not await check_user_joined(context, user.id):
+        if FORCE_SUB_CHANNEL and not await check_user_joined(context, user.id):
             await update.message.reply_text("⚠️ Files ke liye channel join karein:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE_LINK)]]))
             return
+            
+        if not is_token_valid(user.id):
+            bot_info = await context.bot.get_me()
+            long_target_url = f"https://t.me/{bot_info.username}?start=verify_{user.id}"
+            short_token_url = await get_short_link(long_target_url)
+            
+            token_msg = (
+                "⚠️ <b>ACCESS TOKEN EXPIRED!</b> ⚠️\n\n"
+                "<i>Your previous access session has ended. Please renew your token to continue downloading files smoothly.</i> ♻️\n\n"
+                "⏳ <b>Token Validity:</b> 8 Hours\n\n"
+                "💡 <i>This is a quick ads-based verification. Completing just 1 token grants you uninterrupted access to all shareable file links for the next 8 hours!</i> ✨"
+            )
+            
+            # Key (🔑) emoji added to Renew Access Token button
+            token_buttons = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔑 Renew Access Token", url=short_token_url)],
+                [InlineKeyboardButton("Tutorial Video", url=TUTORIAL_VIDEO_LINK)],
+                [InlineKeyboardButton("♻️ Try Again", callback_data="check_token")]
+            ])
+            
+            await update.message.reply_text(token_msg, parse_mode="HTML", reply_markup=token_buttons)
+            return
+
         asyncio.create_task(send_files_logic(update, context, args[0]))
         return
-    await update.message.reply_text("👋 Hello! I am a permanent batch file store bot.")
+        
+    await update.message.reply_text("🗄️ Your automation scripts are securely archived 🛡️, fully optimized ⚙️, and ready for instant deployment 🚀💻⚡. Ready when you are! 🎯🔥")
 
 async def check_logs(update, context):
     if update.effective_user.id not in ADMIN_IDS: return
@@ -347,7 +432,7 @@ async def process_batch_queue(user_id, context, message):
 
 async def store_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS: return  # सिर्फ एडमिन की फाइलें सेव होंगी
+    if user_id not in ADMIN_IDS: return  
     
     if user_id not in user_queues:
         user_queues[user_id] = []
@@ -378,10 +463,11 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("getlink", get_link_manually))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CallbackQueryHandler(cancel_callback, pattern="cancel_action"))
+    app.add_handler(CallbackQueryHandler(token_callback, pattern="check_token"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.ALL & ~filters.COMMAND, store_file))
     
     app.add_error_handler(global_error_handler)
     
-    print("🤖 Bot is running on Railway!")
+    print("🤖 Bot is running on Railway with Key Emoji in Access Token Button!")
     app.run_polling(drop_pending_updates=True)
     
