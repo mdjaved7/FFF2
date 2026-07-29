@@ -34,18 +34,49 @@ FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "")
 CHANNEL_INVITE_LINK = os.getenv("CHANNEL_INVITE_LINK", "") 
 PRIVATE_STORE_ID = int(os.getenv("PRIVATE_STORE_ID", "0"))  
 
-# MongoDB Setup
+# MongoDB Setup (Multiple Database Architecture)
 client = MongoClient(MONGO_URI)
-db = client['bot_database']
-batch_col = db['file_batches']
-user_col = db['users']
-delete_col = db['delete_queue'] 
-history_col = db['user_history']  
-token_col = db['user_tokens'] 
+
+# 1. Primary Database (Users, Tokens, History, Registry)
+primary_db = client['bot_primary_db']
+user_col = primary_db['users']
+delete_col = primary_db['delete_queue'] 
+history_col = primary_db['user_history']  
+token_col = primary_db['user_tokens'] 
+registry_col = primary_db['batch_registry'] # Yeh track karega ki konsa batch kis database me hai
+config_col = primary_db['bot_config']
 
 user_queues = {}
 backup_queues = {}
 cancel_status = {}
+
+# --- Dynamic File Database Selector ---
+def get_active_file_db():
+    config = config_col.find_one({"_id": "file_db_config"})
+    idx = config.get("index", 0) if config else 0
+    
+    db_name = f"bot_file_db_{idx}"
+    current_db = client[db_name]
+    
+    try:
+        stats_data = current_db.command("dbStats")
+        storage_size_mb = stats_data.get("storageSize", 0) / (1024 * 1024)
+        
+        # Agar current database 450MB se zyada ho gaya, toh agle database par shift ho jao
+        if storage_size_mb >= 450.0:
+            idx += 1
+            config_col.update_one(
+                {"_id": "file_db_config"},
+                {"$set": {"index": idx}},
+                upsert=True
+            )
+            db_name = f"bot_file_db_{idx}"
+            current_db = client[db_name]
+            print(f"⚠️ Database full! Switched to new database: {db_name}")
+    except Exception as e:
+        print(f"File DB check error: {e}")
+        
+    return current_db, db_name
 
 # --- File Size Formatter ---
 def get_readable_size(size_in_bytes):
@@ -89,16 +120,16 @@ def renew_user_token(user_id):
 async def database_storage_checker(app):
     while True:
         try:
-            stats_data = db.command("dbStats")
-            storage_size_bytes = stats_data.get("storageSize", 0)
-            storage_size_mb = storage_size_bytes / (1024 * 1024)
+            active_db, active_name = get_active_file_db()
+            stats_data = active_db.command("dbStats")
+            storage_size_mb = stats_data.get("storageSize", 0) / (1024 * 1024)
             
             if storage_size_mb >= 450.0:
                 alert_text = (
                     f"⚠️ <b>MONGODB STORAGE WARNING!</b> ⚠️\n\n"
-                    f"आपका डेटाबेस लगभग पूरा भरने वाला है!\n"
+                    f"Current Active File DB ({active_name}) full hone wala hai!\n"
                     f"<b>Current Usage:</b> {storage_size_mb:.2f} MB / 512 MB\n\n"
-                    f"कृपया कुछ पुराना डेटा डिलीट करें, अन्यथा बॉट नया डेटा सेव करना बंद कर देगा।"
+                    f"System automatically naye database par shift ho raha hai."
                 )
                 try:
                     for adm in ADMIN_IDS:
@@ -170,7 +201,16 @@ async def check_user_joined(context, user_id):
 async def send_files_logic(update, context, batch_key):
     user = update.effective_user
     cancel_status[user.id] = False 
-    batch = batch_col.find_one({"batch_key": batch_key})
+    
+    # 🔍 Registry se check karo ki batch kis database me stored hai
+    reg_record = registry_col.find_one({"batch_key": batch_key})
+    batch = None
+    if reg_record:
+        target_db_name = reg_record["db_name"]
+        batch = client[target_db_name]['file_batches'].find_one({"batch_key": batch_key})
+    else:
+        # Fallback purane single database ke liye
+        batch = client['bot_database']['file_batches'].find_one({"batch_key": batch_key})
     
     if not batch:
         await update.message.reply_text("❌ Yeh link amanaye (invalid) hai.")
@@ -208,13 +248,19 @@ async def send_files_logic(update, context, batch_key):
             sent_msg = None
             file_bytes = file.get('file_size', 0)
             readable_size = get_readable_size(file_bytes)
+            file_type = file.get('file_type')
+            original_caption = file.get('caption', '')
             
-            custom_caption = (
-                f">> JOIN > @AllstoryFM2 🔥\n"
-                f"✅✨\n\n"
-                f"👉 FILE SIZE :- {readable_size} 👑\n"
-                f"🔥"
-            )
+            # 💡 सिर्फ वीडियो के लिए ओरिजिनल कैप्सन लागू होगी
+            if file_type == 'video' and original_caption:
+                custom_caption = f"{original_caption}\n\n👉 FILE SIZE :- {readable_size} 👑\n>> JOIN > @AllstoryFM2 🔥"
+            else:
+                custom_caption = (
+                    f">> JOIN > @AllstoryFM2 🔥\n"
+                    f"✅✨\n\n"
+                    f"👉 FILE SIZE :- {readable_size} 👑\n"
+                    f"🔥"
+                )
 
             if file['file_type'] == 'document': 
                 sent_msg = await context.bot.send_document(update.message.chat_id, file['file_id'], protect_content=True, caption=custom_caption)
@@ -250,7 +296,7 @@ async def send_files_logic(update, context, batch_key):
     alert_text = "𝙷𝙸𝙽𝙳𝙸 𝚂𝚃𝙾𝚁𝚈\n❤️ 𝙷𝙴𝚈 𝙱𝚁𝙾 🇮🇳 \n\n📂 𝙵𝙸𝙻𝙴𝚂 𝚆𝙸𝙻𝙻 𝙱𝙴 𝙳𝙴𝙻𝙴𝚃𝙴𝙳 \n𝙰𝙵𝚃𝙴𝚁 [ 𝟾 𝙷𝙾𝚄𝚁𝚂 ] 𝙿𝙻𝙴𝙰𝚂𝙴 \n𝚂𝙰𝚅𝙴 𝚃𝙷𝙴𝙼 𝚂𝙾𝙼𝙴𝚆𝙷𝙴𝚁𝙴 𝚂𝙰𝙵𝙴."
     if is_cancelled:
         alert_text += "\n\n⚠️ *Process was cancelled by user.*"
-
+        
     try:
         final_msg = await update.message.reply_text(
             alert_text, 
@@ -269,6 +315,8 @@ async def send_files_logic(update, context, batch_key):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    is_admin = user.id in ADMIN_IDS
+    
     try:
         if not user_col.find_one({"user_id": user.id}):
             user_col.insert_one({"user_id": user.id, "username": user.username, "first_name": user.first_name})
@@ -288,31 +336,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Token Verification Error: {e}")
 
     if args:
-        if FORCE_SUB_CHANNEL and not await check_user_joined(context, user.id):
-            await update.message.reply_text("⚠️ Files ke liye channel join karein:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE_LINK)]]))
-            return
-            
-        if not is_token_valid(user.id):
-            bot_info = await context.bot.get_me()
-            long_target_url = f"https://t.me/{bot_info.username}?start=verify_{user.id}"
-            short_token_url = await get_short_link(long_target_url)
-            
-            token_msg = (
-                "⚠️ <b>ACCESS TOKEN EXPIRED!</b> ⚠️\n\n"
-                "<i>Your previous access session has ended. Please renew your token to continue downloading files smoothly.</i> ♻️\n\n"
-                "⏳ <b>Token Validity:</b> 8 Hours\n\n"
-                "💡 <i>This is a quick ads-based verification. Completing just 1 token grants you uninterrupted access to all shareable file links for the next 8 hours!</i> ✨"
-            )
-            
-            # Key (🔑) emoji added to Renew Access Token button
-            token_buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔑 Renew Access Token", url=short_token_url)],
-                [InlineKeyboardButton("Tutorial Video", url=TUTORIAL_VIDEO_LINK)],
-                [InlineKeyboardButton("♻️ Try Again", callback_data="check_token")]
-            ])
-            
-            await update.message.reply_text(token_msg, parse_mode="HTML", reply_markup=token_buttons)
-            return
+        # Admin ke liye Force-sub aur Token/Ad check bypass hoga
+        if not is_admin:
+            if FORCE_SUB_CHANNEL and not await check_user_joined(context, user.id):
+                await update.message.reply_text("⚠️ Files ke liye channel join karein:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE_LINK)]]))
+                return
+                
+            if not is_token_valid(user.id):
+                bot_info = await context.bot.get_me()
+                long_target_url = f"https://t.me/{bot_info.username}?start=verify_{user.id}"
+                short_token_url = await get_short_link(long_target_url)
+                
+                token_msg = (
+                    "⚠️ <b>ACCESS TOKEN EXPIRED!</b> ⚠️\n\n"
+                    "<i>Your previous access session has ended. Please renew your token to continue downloading files smoothly.</i> ♻️\n\n"
+                    "⏳ <b>Token Validity:</b> 8 Hours\n\n"
+                    "💡 <i>This is a quick ads-based verification. Completing just 1 token grants you uninterrupted access to all shareable file links for the next 8 hours!</i> ✨"
+                )
+                
+                token_buttons = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔑 Renew Access Token", url=short_token_url)],
+                    [InlineKeyboardButton("Tutorial Video", url=TUTORIAL_VIDEO_LINK)],
+                    [InlineKeyboardButton("♻️ Try Again", callback_data="check_token")]
+                ])
+                
+                await update.message.reply_text(token_msg, parse_mode="HTML", reply_markup=token_buttons)
+                return
 
         asyncio.create_task(send_files_logic(update, context, args[0]))
         return
@@ -334,16 +383,17 @@ async def stats(update, context):
             total_users = user_col.count_documents({})
             total_reqs = history_col.count_documents({})
             
+            active_db, active_name = get_active_file_db()
             try:
-                stats_cmd = db.command("dbStats")
+                stats_cmd = active_db.command("dbStats")
                 storage_bytes = stats_cmd.get("storageSize", stats_cmd.get("dataSize", 0))
                 
                 if storage_bytes < 1024 * 1024:
                     storage_kb = storage_bytes / 1024
-                    storage_text = f"{storage_kb:.2f} KB / 512 MB"
+                    storage_text = f"{storage_kb:.2f} KB ({active_name})"
                 else:
                     storage_mb = storage_bytes / (1024 * 1024)
-                    storage_text = f"{storage_mb:.2f} MB / 512 MB"
+                    storage_text = f"{storage_mb:.2f} MB ({active_name})"
             except Exception as db_err:
                 print(f"dbStats Error: {db_err}")
                 storage_text = "Unavailable"
@@ -351,7 +401,7 @@ async def stats(update, context):
             await update.message.reply_text(
                 f"👥 Total Users: {total_users}\n"
                 f"📥 Total Requests: {total_reqs}\n"
-                f"🗄️ DB Storage Used: {storage_text}"
+                f"🗄️ Active DB Storage: {storage_text}"
             )
         except Exception as e:
             await update.message.reply_text(f"❌ Stats calculation error: {e}")
@@ -390,9 +440,17 @@ async def get_link_manually(update, context):
         
     batch_key = f"batch_{int(time.time())}"
     try:
-        batch_col.insert_one({"batch_key": batch_key, "files": backup_queues[user_id], "timestamp": time.time()})
+        # Active file DB prapt karein
+        active_db, active_name = get_active_file_db()
+        file_batch_col = active_db['file_batches']
+        
+        file_batch_col.insert_one({"batch_key": batch_key, "files": backup_queues[user_id], "timestamp": time.time()})
+        
+        # Registry me save karein ki yeh batch kis database me hai
+        registry_col.insert_one({"batch_key": batch_key, "db_name": active_name})
+        
         bot_info = await context.bot.get_me()
-        await update.message.reply_text(f"🔗 Link: https://t.me/{bot_info.username}?start={batch_key}")
+        await update.message.reply_text(f"🔗 Link: https://t.me/{bot_info.username}?start={batch_key}\n📂 Stored in: {active_name}")
     except Exception as e:
         await update.message.reply_text(f"❌ Link generation error: {e}")
 
@@ -403,9 +461,13 @@ async def process_batch_queue(user_id, context, message):
     saved_files = []
     
     for msg in raw_files:
+        if not msg:  
+            continue
+            
         file_obj = msg.document or msg.video or (msg.photo[-1] if msg.photo else None) or msg.audio
         file_id = file_obj.file_id if file_obj else None
         file_size = file_obj.file_size if file_obj and hasattr(file_obj, 'file_size') else 0
+        file_caption = msg.caption or "" 
         
         if file_id:
             while True:  
@@ -414,7 +476,8 @@ async def process_batch_queue(user_id, context, message):
                     saved_files.append({
                         "file_id": file_id, 
                         "file_size": file_size,
-                        "file_type": 'document' if msg.document else ('video' if msg.video else ('photo' if msg.photo else 'audio'))
+                        "file_type": 'document' if msg.document else ('video' if msg.video else ('photo' if msg.photo else 'audio')),
+                        "caption": file_caption 
                     })
                     await asyncio.sleep(0.2)
                     break
@@ -468,6 +531,6 @@ if __name__ == "__main__":
     
     app.add_error_handler(global_error_handler)
     
-    print("🤖 Bot is running on Railway with Key Emoji in Access Token Button!")
+    print("🤖 Bot is running on Railway with Multi-Database Auto-Switch System & Video Captions!")
     app.run_polling(drop_pending_updates=True)
-    
+      
