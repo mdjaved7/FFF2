@@ -587,14 +587,13 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         
         # User ko bot ki taraf se confirmation message bhejna
-        try:
-            await context.bot.send_message(
-                chat_id=user.id,
-                text=f"✅ <b>Verification Done!</b>\nAapki <b>{chat.title}</b> ki request verify ho gayi hai. Ab aap wapas bot par ja kar '🔄 Try Again' ya file link par click karein.",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        # --- Handle Join Requests (Without Approving them to Channel) ---
+async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user = update.chat_join_request.from_user
+        chat = update.chat_join_request.chat
+        
+        
             
     except Exception as e:
         print(f"Join Request Handling Error: {e}")
