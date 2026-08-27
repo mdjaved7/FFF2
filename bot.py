@@ -12,7 +12,7 @@ from telegram.ext import (
     MessageHandler, 
     CommandHandler, 
     CallbackQueryHandler,
-    ChatJoinRequestHandler, # Added for Auto Approval
+    ChatJoinRequestHandler, # Added for Join Request Handling
     ContextTypes, 
     filters
 )
@@ -49,6 +49,7 @@ config_col = primary_db['bot_config']
 
 # Dynamic Multi Force Join Collection
 fsub_col = primary_db['force_sub_channels']
+join_req_col = primary_db['join_requests_data'] # New collection for pending requests
 
 user_queues = {}
 backup_queues = {}
@@ -120,7 +121,7 @@ def renew_user_token(user_id):
         upsert=True
     )
 
-# --- Dynamic Multi Force Sub Checker & Keyboard Generator ---
+# --- Dynamic Multi Force Sub Checker (Updated for Pending Requests) ---
 async def get_fsub_buttons(context, user_id, start_param):
     channels = list(fsub_col.find())
     if not channels:
@@ -135,16 +136,24 @@ async def get_fsub_buttons(context, user_id, start_param):
         ch_link = ch["invite_link"]
         ch_title = ch.get("title", "Join Channel")
 
+        # Check 1: DB check for pending request
+        has_requested = join_req_col.find_one({"user_id": user_id, "channel_id": ch_id})
+        
+        if has_requested:
+            joined_buttons.append([InlineKeyboardButton(f"✅ {ch_title}", url=ch_link)])
+            continue
+
+        # Check 2: Regular member check if no request found in DB
         try:
             member = await context.bot.get_chat_member(chat_id=ch_id, user_id=user_id)
             if member.status in ['member', 'administrator', 'creator']:
                 joined_buttons.append([InlineKeyboardButton(f"✅ {ch_title}", url=ch_link)])
             else:
                 has_unjoined = True
-                unjoined_buttons.append([InlineKeyboardButton(f"📢 Join {ch_title}", url=ch_link)])
+                unjoined_buttons.append([InlineKeyboardButton(f"📢 Request {ch_title}", url=ch_link)])
         except Exception as e:
             has_unjoined = True
-            unjoined_buttons.append([InlineKeyboardButton(f"📢 Join {ch_title}", url=ch_link)])
+            unjoined_buttons.append([InlineKeyboardButton(f"📢 Request {ch_title}", url=ch_link)])
 
     if has_unjoined:
         bot_info = await context.bot.get_me()
@@ -564,25 +573,31 @@ async def get_link_manually(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Link generation error: {e}")
 
-# --- Auto Approve Join Requests Handler ---
-async def auto_approve_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Handle Join Requests (Without Approving them to Channel) ---
+async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.chat_join_request.from_user
         chat = update.chat_join_request.chat
         
-        await update.chat_join_request.approve()
+        # Request aane par user ko DB mein save karlo as 'requested' (taaki bypass mil jaye)
+        join_req_col.update_one(
+            {"user_id": user.id, "channel_id": chat.id},
+            {"$set": {"status": "requested", "time": time.time()}},
+            upsert=True
+        )
         
+        # User ko bot ki taraf se confirmation message bhejna
         try:
             await context.bot.send_message(
                 chat_id=user.id,
-                text=f"✅ <b>Welcome!</b>\nAapki <b>{chat.title}</b> ki join request approve kar di gayi hai. Ab aap wapas bot par ja kar /start dabayein ya file link par click karein.",
+                text=f"✅ <b>Verification Done!</b>\nAapki <b>{chat.title}</b> ki request verify ho gayi hai. Ab aap wapas bot par ja kar '🔄 Try Again' ya file link par click karein.",
                 parse_mode="HTML"
             )
         except Exception:
             pass
             
     except Exception as e:
-        print(f"Join Request Approval Error: {e}")
+        print(f"Join Request Handling Error: {e}")
 
 # --- Application Startup ---
 def main():
@@ -612,10 +627,10 @@ def main():
     # File Media Handlers
     app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.PHOTO | filters.AUDIO, handle_incoming_files))
 
-    # Auto Approve Join Handler
-    app.add_handler(ChatJoinRequestHandler(auto_approve_join))
+    # Catch Join Requests (Store to DB but DO NOT add to channel)
+    app.add_handler(ChatJoinRequestHandler(handle_join_request))
 
-    print("🤖 Bot with Unlimited Dynamic Multi-Force Sub & Auto-Approve successfully running...")
+    print("🤖 Bot with Request-Based Bypass (No Auto-Join) successfully running...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
