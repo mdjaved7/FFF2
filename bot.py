@@ -11,7 +11,8 @@ from telegram.ext import (
     Application,
     MessageHandler, 
     CommandHandler, 
-    CallbackQueryHandler, 
+    CallbackQueryHandler,
+    ChatJoinRequestHandler, # Added for Auto Approval
     ContextTypes, 
     filters
 )
@@ -121,14 +122,9 @@ def renew_user_token(user_id):
 
 # --- Dynamic Multi Force Sub Checker & Keyboard Generator ---
 async def get_fsub_buttons(context, user_id, start_param):
-    """
-    Checks user channel membership.
-    Returns: (bool: has_joined_all, list: inline_buttons)
-    Hides already joined channels or marks with ✅
-    """
     channels = list(fsub_col.find())
     if not channels:
-        return True, [] # Agar koi dynamic channel add nahi hai, bypass check
+        return True, [] 
 
     unjoined_buttons = []
     joined_buttons = []
@@ -142,18 +138,15 @@ async def get_fsub_buttons(context, user_id, start_param):
         try:
             member = await context.bot.get_chat_member(chat_id=ch_id, user_id=user_id)
             if member.status in ['member', 'administrator', 'creator']:
-                # User channel join kar chuka hai -> Display mark ✅ (Optional display status)
                 joined_buttons.append([InlineKeyboardButton(f"✅ {ch_title}", url=ch_link)])
             else:
                 has_unjoined = True
                 unjoined_buttons.append([InlineKeyboardButton(f"📢 Join {ch_title}", url=ch_link)])
         except Exception as e:
-            # Bot permission error ya invalid ID
             has_unjoined = True
             unjoined_buttons.append([InlineKeyboardButton(f"📢 Join {ch_title}", url=ch_link)])
 
     if has_unjoined:
-        # User ne sabhi join nahi kiye -> Sirf Pending Channels Dikhayein
         bot_info = await context.bot.get_me()
         try_again_link = f"https://t.me/{bot_info.username}?start={start_param}"
         unjoined_buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_link)])
@@ -320,7 +313,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     args = context.args
     
-    # Check Token Verification Callback Param
     if args and args[0].startswith("verify_"):
         try:
             token_user_id = int(args[0].split("_")[1])
@@ -334,7 +326,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args:
         start_param = args[0]
         
-        # 🟢 MULTI FORCE JOIN CHECKING LOGIC
         has_joined_all, fsub_buttons = await get_fsub_buttons(context, user.id, start_param)
         if not has_joined_all:
             await update.message.reply_text(
@@ -344,7 +335,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # 🟢 TOKEN EXPIRY CHECKING LOGIC
         if not is_token_valid(user.id):
             bot_info = await context.bot.get_me()
             long_target_url = f"https://t.me/{bot_info.username}?start=verify_{user.id}"
@@ -366,7 +356,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(token_msg, parse_mode="HTML", reply_markup=token_buttons)
             return
 
-        # If everything verified, deliver files
         asyncio.create_task(send_files_logic(update, context, start_param))
         return
         
@@ -575,6 +564,26 @@ async def get_link_manually(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Link generation error: {e}")
 
+# --- Auto Approve Join Requests Handler ---
+async def auto_approve_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user = update.chat_join_request.from_user
+        chat = update.chat_join_request.chat
+        
+        await update.chat_join_request.approve()
+        
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=f"✅ <b>Welcome!</b>\nAapki <b>{chat.title}</b> ki join request approve kar di gayi hai. Ab aap wapas bot par ja kar /start dabayein ya file link par click karein.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+            
+    except Exception as e:
+        print(f"Join Request Approval Error: {e}")
+
 # --- Application Startup ---
 def main():
     if not TELEGRAM_BOT_TOKEN:
@@ -603,7 +612,10 @@ def main():
     # File Media Handlers
     app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.PHOTO | filters.AUDIO, handle_incoming_files))
 
-    print("🤖 Bot with Unlimited Dynamic Multi-Force Sub successfully running...")
+    # Auto Approve Join Handler
+    app.add_handler(ChatJoinRequestHandler(auto_approve_join))
+
+    print("🤖 Bot with Unlimited Dynamic Multi-Force Sub & Auto-Approve successfully running...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
