@@ -12,7 +12,7 @@ from telegram.ext import (
     MessageHandler, 
     CommandHandler, 
     CallbackQueryHandler,
-    ChatJoinRequestHandler, # Added for Join Request Handling
+    ChatJoinRequestHandler,
     ContextTypes, 
     filters
 )
@@ -49,7 +49,7 @@ config_col = primary_db['bot_config']
 
 # Dynamic Multi Force Join Collection
 fsub_col = primary_db['force_sub_channels']
-join_req_col = primary_db['join_requests_data'] # New collection for pending requests
+join_req_col = primary_db['join_requests_data'] # Collection for pending requests
 
 user_queues = {}
 backup_queues = {}
@@ -121,7 +121,7 @@ def renew_user_token(user_id):
         upsert=True
     )
 
-# --- Dynamic Multi Force Sub Checker (Updated for Pending Requests) ---
+# --- Dynamic Multi Force Sub Checker ---
 async def get_fsub_buttons(context, user_id, start_param):
     channels = list(fsub_col.find())
     if not channels:
@@ -585,15 +585,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             {"$set": {"status": "requested", "time": time.time()}},
             upsert=True
         )
-        
-        # User ko bot ki taraf se confirmation message bhejna
-        # --- Handle Join Requests (Without Approving them to Channel) ---
-async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user = update.chat_join_request.from_user
-        chat = update.chat_join_request.chat
-        
-        
             
     except Exception as e:
         print(f"Join Request Handling Error: {e}")
@@ -633,4 +624,4 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
-    main()
+    main() 
